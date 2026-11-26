@@ -13,6 +13,8 @@ let customTypeConfig = [];
 let allPageConfig = null;
 let activeSearchCategory = 'All';
 let activeSearchQuery = '';
+let abNoticeSliderCfg = null, abNsTimer = null, abNsIndex = 0;
+let abSearchPageCfg = null;
 let cachedHomeMarkup = '';
 let contentFirstPaintDone = false;
 let heroDataLoaded = false;
@@ -262,7 +264,26 @@ function normalizeSlideList(data){
   }
   return [];
 }
-function cardImage(item){ return asUrl(firstValue(item,['poster','posterUrl','image','imageUrl','thumbnail','thumbnailUrl','cover','coverUrl','photo','banner','backdrop'],'')); }
+// Badge rules (Admin badge / Card Badge 1-3):
+//   "Adult" -> the User Website never shows the card's photos.
+//   "18+"   -> photos are shown BLURRED.
+const AB_ADULT_RE = /(^|[^a-z0-9])adult([^a-z0-9]|$)/i;
+const AB_18_RE = /(^|[^0-9])18\s*(\+|plus)/i;
+function abBadgeText(item){
+  if (!item || typeof item !== 'object') return '';
+  const flat = v => Array.isArray(v) ? v.map(flat).join('|') : (v && typeof v === 'object' ? Object.values(v).map(flat).join('|') : String(v ?? ''));
+  return ['badge','statusBadge','status','labelBadge','tag','contentStatus','badgesText','badgeText','badges','badgeList','labels','cardBadges']
+    .filter(k => item[k] != null).map(k => flat(item[k])).join('|');
+}
+function abIsAdultCard(item){ return AB_ADULT_RE.test(abBadgeText(item)); }
+function abIs18Card(item){ const t = abBadgeText(item); return !AB_ADULT_RE.test(t) && AB_18_RE.test(t); }
+const abBlurClass = item => abIs18Card(item) ? ' ab-blur-18' : '';
+function abHistoryItem(x){ return (latestContentItems||[]).find(c => String(c?.id ?? c?.key ?? c?.contentId ?? '') === String(x?.id)); }
+function abHistoryPoster(x){
+  const live = (latestContentItems||[]).find(c => String(c?.id ?? c?.key ?? c?.contentId ?? '') === String(x?.id));
+  return abIsAdultCard(live) ? '' : (x?.poster || '');
+}
+function cardImage(item){ if (abIsAdultCard(item)) return ''; return asUrl(firstValue(item,['poster','posterUrl','image','imageUrl','thumbnail','thumbnailUrl','cover','coverUrl','photo','banner','backdrop'],'')); }
 function cardTitle(item){ return firstValue(item,['title','name','animeName','movieName','contentTitle'],'Untitled'); }
 function cardTarget(item){ return firstValue(item,['detailUrl','route','contentUrl','url','link','id','key'],''); }
 function contentUrl(item){
@@ -334,6 +355,21 @@ function showPageLoadingSkeleton(kind='details'){
 /* ============================================================
    HERO SLIDER
    ============================================================ */
+// While hero data is not loaded, keep the static default hero from index.html (no shimmer swap).
+function abShowHeroLoading(el){
+  if (!el) return;
+  if (el.querySelector('.ab-default-hero')) return;
+  el.innerHTML = heroSkeletonMarkup();
+}
+// Remember the last hero poster/background so the next page load can show them blurred at once.
+const AB_HERO_HINT_KEY = 'animebox_hero_hint_v1';
+function abSaveHeroHint(poster, background){
+  try {
+    const ok = u => /^https?:\/\//i.test(String(u||'').trim()) ? String(u).trim() : '';
+    const next = JSON.stringify({poster: ok(poster), background: ok(background)});
+    if (localStorage.getItem(AB_HERO_HINT_KEY) !== next) localStorage.setItem(AB_HERO_HINT_KEY, next);
+  } catch (_) {}
+}
 function heroSkeletonMarkup(){
   // Match the final hero layout so loading never shifts the slider UI.
   return `<div class="hero-slide-bg ab-hero-skeleton-bg"></div>
@@ -351,7 +387,7 @@ function heroSkeletonMarkup(){
 }
 function slideIdentity(s,i){ return String((s && (s.id ?? s.key ?? s.link ?? s.title ?? s.name)) ?? i); }
 function chooseRandomInitialSlide(){
-  if (!heroDataLoaded){ heroSlider.innerHTML = heroSkeletonMarkup(); return; }
+  if (!heroDataLoaded){ abShowHeroLoading(heroSlider); return; }
   if (!heroSlides.length){ heroIndex = 0; heroSlider.innerHTML = '<div class="hero-empty">No hero slides published yet.</div>'; return; }
   if (heroSlides.length === 1){ heroIndex = 0; return; }
   let previous = '';
@@ -368,7 +404,7 @@ function renderHero(){
   const heroSlider = document.getElementById('heroSlider');
   if (!heroSlider) return;
   if (!heroDataLoaded){
-    heroSlider.innerHTML = heroSkeletonMarkup();
+    abShowHeroLoading(heroSlider);
     return;
   }
   if (!heroSlides.length){
@@ -384,9 +420,11 @@ function renderHero(){
     }
     return fb;
   };
+  const adultHero   = abIsAdultCard(s) || abIsAdultCard(linkedCard);
+  const blurHero    = !adultHero && (abIs18Card(s) || abIs18Card(linkedCard));
   const title       = value(['title','name','contentTitle'], 'Featured');
-  const poster      = value(['linkedPoster','poster','image','thumbnail'], '') || (linkedCard ? cardImage(linkedCard) : '');
-  const background  = value(['image','backdrop','backdropUrl','backgroundImage','bannerImage'], poster);
+  const poster      = adultHero ? '' : (value(['linkedPoster','poster','image','thumbnail'], '') || (linkedCard ? cardImage(linkedCard) : ''));
+  const background  = adultHero ? '' : value(['image','backdrop','backdropUrl','backgroundImage','bannerImage'], poster);
   const type        = value(['category','type','contentType','label'], 'Movie');
   const year        = value(['year','releaseYear'], '');
   const rating      = value(['rating','imdbRating','score'], '');
@@ -399,11 +437,12 @@ function renderHero(){
   const chips = [language, genre, quality, status].filter(Boolean);
   const bgSafe = String(background || '').replace(/'/g,'%27').replace(/\)/g,'%29');
   const fallbackBg = poster ? `url('${safeText(String(poster).replace(/'/g,'%27'))}')` : 'none';
+  abSaveHeroHint(poster, background);
 
   heroSlider.innerHTML = `
-    <div class="hero-slide-bg" style="background-image:${background ? `url('${safeText(bgSafe)}')` : fallbackBg}"></div>
+    <div class="hero-slide-bg${blurHero?' ab-blur-18-bg':''}" style="background-image:${background ? `url('${safeText(bgSafe)}')` : fallbackBg}"></div>
     <div class="hero-slide">
-      ${poster ? `<img class="hero-poster ab-img-loading" decoding="async" fetchpriority="high" src="${safeText(poster)}" alt="${safeText(title)} poster" loading="eager" onerror="this.style.display='none'">` : ''}
+      ${poster ? `<img class="hero-poster ab-img-loading${blurHero?' ab-blur-18':''}" decoding="async" fetchpriority="high" src="${safeText(poster)}" alt="${safeText(title)} poster" loading="eager" onerror="this.style.display='none'">` : ''}
       <div class="hero-info">
         <div class="hero-tags">
           <span class="hero-tag type">${safeText(type).toUpperCase()}</span>
@@ -487,6 +526,7 @@ function cardsPerPage(){
 }
 function allHomeTypeConfig(){ return [...builtinTypeConfig, ...customTypeConfig, ...(allPageConfig ? [allPageConfig] : [])]; }
 function itemMatchesType(item, cfg){
+  if (cfg && typeof cfg.match === 'function') return !!cfg.match(item);
   const fields = ['type','category','contentType','mediaType','kind','section','typeKey','typeId','typeName','content_type','movieType'];
   const values = fields.map(k => item && item[k]).filter(v => v!==undefined && v!==null && String(v).trim()!=='').map(String);
   const aliases = {
@@ -663,13 +703,95 @@ function abRefreshTimes(){
   });
 }
 
+// Poster hints: remember the last poster URLs of each built-in type so the NEXT page load can show
+// them blurred inside the default cards right away (before any data arrives). Real images then
+// replace them and sharpen.
+const AB_POSTER_HINT_KEY = 'animebox_poster_hints_v1';
+function abSavePosterHint(typeName, urls){
+  try {
+    const clean = (urls||[]).map(u => String(u||'').trim()).filter(u => /^https?:\/\//i.test(u)).slice(0,5);
+    const all = JSON.parse(localStorage.getItem(AB_POSTER_HINT_KEY) || '{}') || {};
+    if (JSON.stringify(all[typeName]||[]) === JSON.stringify(clean)) return;
+    if (clean.length) all[typeName] = clean; else delete all[typeName];
+    localStorage.setItem(AB_POSTER_HINT_KEY, JSON.stringify(all));
+  } catch (_) {}
+}
+// Default (placeholder) card for built-in types that have no Admin card yet.
+function abDefaultCardHtml(typeName){
+  const name = safeText(typeName);
+  return `<div class="home-type-card ab-default-card" data-default-card="${name}" title="${name}">
+        <div class="home-type-card-poster">
+          <svg class="ab-default-poster" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M10 9.5v5l4.5-2.5z"/></svg>
+          <div class="home-card-badges">
+            <div class="home-card-badge-row"><div class="home-card-badge-stack"><span class="home-card-badge new">Coming Soon</span></div></div>
+            <div class="home-card-badge-row"><span class="home-card-badge type">${name}</span></div>
+          </div>
+        </div>
+        <div class="home-type-card-title">${name}</div>
+      </div>`;
+}
+function abHomeCardHtml(item, opts){
+  opts = opts || {};
+  const image = cardImage(item);
+  const title = cardTitle(item);
+  const target = cardTarget(item);
+  const href = /^https?:\/\//i.test(String(target)) ? String(target) : (target ? contentUrl(item) : '/home');
+  const rawType = firstValue(item, ['typeName','type','contentType','mediaType','kind','category'],'');
+  const rawAdminBadge = firstValue(item, ['badge','statusBadge','status','labelBadge','tag','contentStatus','badgesText','badgeText'],'');
+  const rawLanguage = firstValue(item, ['language','lang','audioLanguage','dubLanguage','languageBadge','audio'],'');
+  const rawYear = firstValue(item, ['year','releaseYear','released','release_year'],'');
+  const rawQuality = firstValue(item, ['quality','resolution','videoQuality','qualityBadge','videoType','qualityLabel','videoResolution','video_resolution','hdQuality','hd','isHD','isHd'],'');
+  const rawRating = firstValue(item, ['rating','imdbRating','score','ratingValue','ratingBadge'],'');
+  const badgeText = v => Array.isArray(v) ? v.filter(Boolean).join(', ') : (typeof v==='object' && v ? firstValue(v,['name','label','value','title'],'') : String(v??'').trim());
+  const adminBadgeText = badgeText(rawAdminBadge);
+  const badgeTokens = adminBadgeText.split(/[;,|]+/).map(v => v.trim()).filter(Boolean);
+  const detectedQuality = badgeTokens.find(v => /^(HD|FHD|FULL\s*HD|UHD|4K|8K|720P|1080P|2160P)$/i.test(v)) || '';
+  const statusTokens = badgeTokens.filter(v => v !== detectedQuality);
+  if (item && (item.comingSoon===true || String(item.comingSoon).toLowerCase()==='true') && !statusTokens.some(v=>/coming soon/i.test(v))) statusTokens.push('Coming Soon');
+  const statusText = statusTokens.join(' · ');
+  const languageText = badgeText(rawLanguage);
+  const yearText = badgeText(rawYear);
+  // Quality is explicitly admin-controlled; never invent WEB-DL for missing values.
+  const qualityText = badgeText(rawQuality) || detectedQuality;
+  const ratingText = badgeText(rawRating);
+  const typeText = badgeText(rawType);
+  const customCardBadges = Array.isArray(item?.cardBadges) ? item.cardBadges.map(badgeText).filter(Boolean).slice(0,3) : [];
+  const extraRaw = item && (item.badges ?? item.badgeList ?? item.labels);
+  const extraBadges = (Array.isArray(extraRaw) ? extraRaw : (extraRaw && typeof extraRaw==='object' ? Object.values(extraRaw) : []))
+    .map(badgeText).filter(Boolean).filter(v => ![statusText,languageText,yearText,qualityText,ratingText,typeText].includes(v));
+  const topLeftVals = (customCardBadges.length ? customCardBadges : [statusText, languageText, yearText, ...extraBadges].filter(Boolean)).slice(0,3);
+  const topLeft = opts.pinned ? '<span class="home-card-badge pinned">PINNED</span>' : topLeftVals.map((v,i)=>`<span class="home-card-badge ${i===0?'new':i===1?'language':'year'}">${safeText(v)}</span>`).join('');
+  const ratingBadge = ratingText ? `<span class="home-card-badge rating">★ ${safeText(ratingText.replace(/^★\s*/,''))}</span>` : '';
+  const typeBadge = typeText ? `<span class="home-card-badge type">${safeText(typeText)}</span>` : '';
+  const qualityBadge = qualityText ? `<span class="home-card-badge quality">${safeText(qualityText)}</span>` : '';
+  const updateStamp = abCardUpdateInfo(item);
+  return `<a class="home-type-card" href="${safeText(href)}" title="${safeText(title)}">
+    <div class="home-type-card-poster">
+      ${image ? `<img class="ab-img-loading${abBlurClass(item)}" src="${safeText(image)}" alt="${safeText(title)}" loading="lazy" decoding="async" fetchpriority="low" onerror="this.style.visibility='hidden'">` : (abIsAdultCard(item) ? '<div class="ab-adult-cover" aria-hidden="true">18+</div>' : '')}
+      <div class="ab-card-play" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 4.5v15l13-7.5z"/></svg></div><div class="ab-card-hint" aria-hidden="true">Watch now</div>
+      <div class="home-card-badges">
+        <div class="home-card-badge-row"><div class="home-card-badge-stack">${topLeft}</div><div class="ab-card-right">${abViewBadgeHtml(abCardId(item))}${qualityBadge}</div></div>
+        <div class="home-card-badge-row">${ratingBadge}${typeBadge}</div>
+      </div>
+    </div>
+    ${abMetaHtml(updateStamp,abCardProgress(item))}
+    <div class="home-type-card-title">${safeText(title)}</div>
+  </a>`;
+}
 function renderHomeTypeCards(items){
   const incomingItems = Array.isArray(items) ? items : [];
   latestContentItems = incomingItems;
   const sourceChanged = incomingItems !== lastRandomizedSource;
   if (sourceChanged){
     lastRandomizedSource = incomingItems;
-    allHomeTypeConfig().forEach(cfg => { cfg.randomizedItems = null; cfg.page = 0; });
+    // Random order is chosen ONCE per page load (so every refresh shows a different mix).
+    // Later live updates (cache -> fresh data, Admin edits) keep the current order and only
+    // update the data inside the cards; new cards are added at the front.
+    allHomeTypeConfig().forEach(cfg => {
+      const stable = Array.isArray(cfg.randomizedItems) && cfg.randomizedItems.length && builtinTypeConfig.concat(customTypeConfig).includes(cfg);
+      if (stable) cfg.keepOrder = true;
+      else { cfg.randomizedItems = null; cfg.page = 0; }
+    });
   }
   const perPage = cardsPerPage();
   allHomeTypeConfig().forEach(cfg => {
@@ -680,63 +802,34 @@ function renderHomeTypeCards(items){
       return itemMatchesType(item, cfg);
     });
     if (!Array.isArray(cfg.randomizedItems)) cfg.randomizedItems = shuffleCards(matchesNow);
+    else if (cfg.keepOrder){
+      const fresh = new Map(matchesNow.map(it => [abCardId(it), it]));
+      const kept = cfg.randomizedItems.map(it => fresh.get(abCardId(it))).filter(Boolean);
+      const keptIds = new Set(kept.map(abCardId));
+      const added = matchesNow.filter(it => !keptIds.has(abCardId(it)));
+      cfg.randomizedItems = [...added, ...kept];
+    }
+    cfg.keepOrder = false;
     const matches = cfg.randomizedItems;
     const totalPages = Math.max(1, Math.ceil(matches.length / perPage));
     cfg.page = Math.min(Math.max(0, cfg.page||0), totalPages-1);
     const start = cfg.page * perPage;
     const visible = matches.slice(start, start + perPage);
-    rail.innerHTML = visible.map(item => {
-      const image = cardImage(item);
-      const title = cardTitle(item);
-      const target = cardTarget(item);
-      const href = /^https?:\/\//i.test(String(target)) ? String(target) : (target ? contentUrl(item) : '/home');
-      const rawType = firstValue(item, ['typeName','type','contentType','mediaType','kind','category'],'');
-      const rawAdminBadge = firstValue(item, ['badge','statusBadge','status','labelBadge','tag','contentStatus','badgesText','badgeText'],'');
-      const rawLanguage = firstValue(item, ['language','lang','audioLanguage','dubLanguage','languageBadge','audio'],'');
-      const rawYear = firstValue(item, ['year','releaseYear','released','release_year'],'');
-      const rawQuality = firstValue(item, ['quality','resolution','videoQuality','qualityBadge','videoType','qualityLabel','videoResolution','video_resolution','hdQuality','hd','isHD','isHd'],'');
-      const rawRating = firstValue(item, ['rating','imdbRating','score','ratingValue','ratingBadge'],'');
-      const badgeText = v => Array.isArray(v) ? v.filter(Boolean).join(', ') : (typeof v==='object' && v ? firstValue(v,['name','label','value','title'],'') : String(v??'').trim());
-      const adminBadgeText = badgeText(rawAdminBadge);
-      const badgeTokens = adminBadgeText.split(/[;,|]+/).map(v => v.trim()).filter(Boolean);
-      const detectedQuality = badgeTokens.find(v => /^(HD|FHD|FULL\s*HD|UHD|4K|8K|720P|1080P|2160P)$/i.test(v)) || '';
-      const statusTokens = badgeTokens.filter(v => v !== detectedQuality);
-      if (item && (item.comingSoon===true || String(item.comingSoon).toLowerCase()==='true') && !statusTokens.some(v=>/coming soon/i.test(v))) statusTokens.push('Coming Soon');
-      const statusText = statusTokens.join(' · ');
-      const languageText = badgeText(rawLanguage);
-      const yearText = badgeText(rawYear);
-      // Quality is explicitly admin-controlled; never invent WEB-DL for missing values.
-      const qualityText = badgeText(rawQuality) || detectedQuality;
-      const ratingText = badgeText(rawRating);
-      const typeText = badgeText(rawType);
-      const customCardBadges = Array.isArray(item?.cardBadges) ? item.cardBadges.map(badgeText).filter(Boolean).slice(0,3) : [];
-      const extraRaw = item && (item.badges ?? item.badgeList ?? item.labels);
-      const extraBadges = (Array.isArray(extraRaw) ? extraRaw : (extraRaw && typeof extraRaw==='object' ? Object.values(extraRaw) : []))
-        .map(badgeText).filter(Boolean).filter(v => ![statusText,languageText,yearText,qualityText,ratingText,typeText].includes(v));
-      const topLeftVals = (customCardBadges.length ? customCardBadges : [statusText, languageText, yearText, ...extraBadges].filter(Boolean)).slice(0,3);
-      const topLeft = topLeftVals.map((v,i)=>`<span class="home-card-badge ${i===0?'new':i===1?'language':'year'}">${safeText(v)}</span>`).join('');
-      const ratingBadge = ratingText ? `<span class="home-card-badge rating">★ ${safeText(ratingText.replace(/^★\s*/,''))}</span>` : '';
-      const typeBadge = typeText ? `<span class="home-card-badge type">${safeText(typeText)}</span>` : '';
-      const qualityBadge = qualityText ? `<span class="home-card-badge quality">${safeText(qualityText)}</span>` : '';
-      const updateStamp = abCardUpdateInfo(item);
-      return `<a class="home-type-card" href="${safeText(href)}" title="${safeText(title)}">
-        <div class="home-type-card-poster">
-          ${image ? `<img class="ab-img-loading" src="${safeText(image)}" alt="${safeText(title)}" loading="lazy" decoding="async" fetchpriority="low" onerror="this.style.visibility='hidden'">` : ''}
-          <div class="ab-card-play" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 4.5v15l13-7.5z"/></svg></div><div class="ab-card-hint" aria-hidden="true">Watch now</div>
-          <div class="home-card-badges">
-            <div class="home-card-badge-row"><div class="home-card-badge-stack">${topLeft}</div><div class="ab-card-right">${abViewBadgeHtml(abCardId(item))}${qualityBadge}</div></div>
-            <div class="home-card-badge-row">${ratingBadge}${typeBadge}</div>
-          </div>
-        </div>
-        ${abMetaHtml(updateStamp,abCardProgress(item))}
-        <div class="home-type-card-title">${safeText(title)}</div>
-      </a>`;
-    }).join('');
+    rail.innerHTML = visible.map(item => abHomeCardHtml(item)).join('');
+    // Default cards:    // Default cards: each built-in type always shows a full row of default cards.
+    // Admin data (poster, title, badge...) loads INTO these slots, replacing them one by one.
+    // The row always has `perPage` slots (5 on desktop). Admin cards fill the slots in order;
+    // the remaining slots stay as default cards. Nothing extra is added beside them.
+    const isBuiltin = builtinTypeConfig.includes(cfg);
+    if (isBuiltin && matches.length) abSavePosterHint(cfg.name, matches.slice(0,5).map(cardImage));
+    if (isBuiltin && matches.length < perPage){
+      rail.innerHTML += Array.from({length: perPage - visible.length}, () => abDefaultCardHtml(cfg.name)).join('');
+    }
     const empty = cfg.emptyElement || document.getElementById(cfg.empty);
-    if (empty) empty.hidden = matches.length > 0;
+    if (empty) empty.hidden = matches.length > 0 || isBuiltin;
     const section = rail.closest('.home-type-section');
     if (section){
-      section.hidden = matches.length === 0;
+      section.hidden = matches.length === 0 && !isBuiltin;
       const controls = ensureTypeControls(section, cfg);
       const [prev, next] = controls.querySelectorAll('button');
       prev.hidden = cfg.page <= 0;
@@ -773,6 +866,115 @@ function renderCustomTypeSections(){
 /* ============================================================
    SEARCH
    ============================================================ */
+const SEARCH_TILES = [
+  {name:'ANIME ZONE',    badge:'FRESH',    icon:'🎌', color:'#5b21b6', href:'/anime-zone'},
+  {name:'18+ ADULT',     badge:'HOT NOW',  icon:'🔞', color:'#be123c', href:'/18-adult'},
+  {name:'ONGOING SERIES',badge:'NEW',      icon:'⏳', color:'#d97706', href:'/ongoing-series'},
+  {name:'K/J/C-DRAMA',   badge:'ALL DRAMA',icon:'🇰🇷', color:'#1d4ed8', href:'/k-j-c-drama'},
+  {name:'SOUTH INDIAN',  badge:'BEST',     icon:'🔥', color:'#0f766e', href:'/south-indian'},
+  {name:'ANIMATION',     badge:'CARTOONS', icon:'🎨', color:'#a21caf', href:'/animation'}
+];
+function abSearchCatMatch(cat, item){
+  const type = String(firstValue(item, ['typeName','type','contentType','mediaType','kind','category'],'Movie')).toLowerCase();
+  const genre = String(firstValue(item, ['genre','genres','tags'],'')).toLowerCase();
+  if (cat==='Movie') return ['movie','movies'].includes(typeKey(type));
+  if (cat==='Anime') return typeKey(type).includes('anime');
+  if (cat==='Series') return ['series','tvseries','webseries'].includes(typeKey(type));
+  if (cat==='Short TV') return type.includes('short');
+  if (cat==='Music') return type.includes('music');
+  if (cat==='Drama') return type.includes('drama') || genre.includes('drama');
+  if (cat==='Top Rated') return Number(firstValue(item,['rating','imdbRating','score'],'0')) >= 7;
+  if (cat==='Community') return false;
+  return true;
+}
+function abUpdateSearchCounts(){
+  const list = (latestContentItems||[]).filter(i => i && i.enabled!==false && String(i.enabled).toLowerCase()!=='false');
+  document.querySelectorAll('[data-cat-count]').forEach(el => {
+    const n = list.filter(i => abSearchCatMatch(el.dataset.catCount, i)).length;
+    el.textContent = n; el.hidden = !n;
+  });
+}
+/* Search page notice slider: Admin > Notice Slider (Supabase settings/noticeSlider).
+   One notice at a time, auto-changes every `interval` seconds (default 15). */
+function abRenderNoticeSlider(){
+  clearInterval(abNsTimer); abNsTimer = null;
+  const box = document.getElementById('searchNoticeSlider'); if (!box) return;
+  const cfg = abNoticeSliderCfg && typeof abNoticeSliderCfg==='object' ? abNoticeSliderCfg : {};
+  const raw = Array.isArray(cfg.items) ? cfg.items : Object.values(cfg.items||{});
+  const items = raw.filter(x => x && typeof x==='object' && x.enabled!==false).map(x => String(x.text||'').trim()).filter(Boolean);
+  if (cfg.enabled===false || !items.length){ box.hidden = true; box.innerHTML=''; return; }
+  const color = /^#[0-9a-f]{3,8}$/i.test(cfg.color||'') ? cfg.color : '#fbbf24';
+  const secs = Math.max(3, Math.min(120, Number(cfg.interval)||15));
+  box.hidden = false;
+  box.style.setProperty('--ns-color', color);
+  box.innerHTML = '<div class="search-notice-head"><span class="search-notice-live"></span><span class="search-notice-label">📢 NOTICE</span><span class="search-notice-dots"></span></div><div class="search-notice-body"><p class="search-notice-text"></p></div>';
+  const textEl = box.querySelector('.search-notice-text'), dotsEl = box.querySelector('.search-notice-dots');
+  if (abNsIndex >= items.length) abNsIndex = 0;
+  const show = i => {
+    abNsIndex = (i + items.length) % items.length;
+    textEl.classList.remove('in'); void textEl.offsetWidth;
+    textEl.textContent = items[abNsIndex]; textEl.classList.add('in');
+    dotsEl.querySelectorAll('i').forEach((d,k) => d.classList.toggle('active', k===abNsIndex));
+  };
+  if (items.length > 1){
+    dotsEl.innerHTML = items.map((_,k)=>`<i data-k="${k}"></i>`).join('');
+    dotsEl.querySelectorAll('i').forEach(d => d.addEventListener('click', () => { show(Number(d.dataset.k)); abRenderNoticeTimer(); }));
+  }
+  function abRenderNoticeTimer(){
+    clearInterval(abNsTimer);
+    if (items.length > 1) abNsTimer = setInterval(() => { if (!document.getElementById('searchNoticeSlider')){ clearInterval(abNsTimer); return; } show(abNsIndex + 1); }, secs*1000);
+  }
+  show(abNsIndex); abRenderNoticeTimer();
+}
+/* Search page Tiles + Chips: Admin > Search Page Manager (Supabase settings/searchPage).
+   No saved config = built-in defaults. Live: re-rendered when Admin saves. */
+const AB_DEFAULT_CHIPS = ['The Last: Naruto the...','Naruto Shippuden the Mov','Naruto Season 6 Episodes','Naruto the Movie: Guardian','Naruto Shippuden the Mov','Pechi (2024)'];
+function abSpList(o){ return Array.isArray(o) ? o : Object.values(o||{}); }
+function abSearchTilesData(){
+  const c = abSearchPageCfg && typeof abSearchPageCfg==='object' ? abSearchPageCfg : null;
+  if (!c) return SEARCH_TILES;
+  if (c.tilesEnabled===false) return [];
+  if (c.tiles==null) return SEARCH_TILES;
+  return abSpList(c.tiles).filter(t => t && typeof t==='object' && t.enabled!==false && String(t.name||'').trim())
+    .map(t => ({name:String(t.name).trim(), badge:String(t.badge||'').trim(), icon:String(t.icon||'').trim(),
+      color:/^#[0-9a-f]{3,8}$/i.test(t.color||'') ? t.color : '#5b21b6',
+      href:/^(\/|https?:\/\/)/i.test(String(t.href||'').trim()) ? String(t.href).trim() : '/home'}));
+}
+function abSearchChipsData(){
+  const c = abSearchPageCfg && typeof abSearchPageCfg==='object' ? abSearchPageCfg : null;
+  if (!c) return {title:'🔥 Everyone is searching', chips:AB_DEFAULT_CHIPS};
+  const title = typeof c.chipsTitle==='string' && c.chipsTitle.trim() ? c.chipsTitle.trim() : '🔥 Everyone is searching';
+  if (c.chipsEnabled===false) return {title, chips:[]};
+  if (c.chips==null) return {title, chips:AB_DEFAULT_CHIPS};
+  return {title, chips:abSpList(c.chips).filter(x => x && typeof x==='object' && x.enabled!==false).map(x => String(x.text||'').trim()).filter(Boolean)};
+}
+function abTilesHtml(){
+  return abSearchTilesData().map(t=>`<a class="search-tile" href="${safeText(t.href)}" style="--tile:${safeText(t.color)}"><span class="search-tile-name"><span class="search-tile-ico" aria-hidden="true">${safeText(t.icon)}</span>${safeText(t.name)}</span>${t.badge?`<span class="search-tile-badge">${safeText(t.badge)}</span>`:''}</a>`).join('');
+}
+function abChipsHtml(){
+  const d = abSearchChipsData();
+  if (!d.chips.length) return '';
+  return `<h3 class="search-small-title">${safeText(d.title)}</h3><div class="search-chips">${d.chips.map(c=>`<button class="search-chip" data-search-chip="${safeText(c)}">${safeText(c)}</button>`).join('')}</div>`;
+}
+function abBindSearchTilesChips(){
+  const content = document.getElementById('pageContent'); if (!content) return;
+  content.querySelectorAll('a.search-tile').forEach(a => a.addEventListener('click', e => {
+    const href = a.getAttribute('href');
+    if (href && href.startsWith('/')){ e.preventDefault(); navigateTo(href); }
+    else if (href && /^https?:/i.test(href)){ e.preventDefault(); window.open(href,'_blank','noopener'); }
+  }));
+  const input = document.getElementById('contentSearchInput');
+  content.querySelectorAll('[data-search-chip]').forEach(b => b.addEventListener('click', () => {
+    activeSearchQuery = b.dataset.searchChip; if (input) input.value = activeSearchQuery; updateSearchResults(); if (input) input.focus();
+  }));
+}
+function abRenderSearchTilesChips(){
+  const tiles = document.getElementById('searchTiles'), chips = document.getElementById('searchChipsBox');
+  if (!tiles || !chips) return;
+  tiles.innerHTML = abTilesHtml(); tiles.hidden = !tiles.innerHTML;
+  chips.innerHTML = abChipsHtml(); chips.hidden = !chips.innerHTML;
+  abBindSearchTilesChips();
+}
 function renderSearchPage(){
   const content = document.getElementById('pageContent');
   const chips = ['The Last: Naruto the...','Naruto Shippuden the Mov','Naruto Season 6 Episodes','Naruto the Movie: Guardian','Naruto Shippuden the Mov','Pechi (2024)'];
@@ -783,16 +985,16 @@ function renderSearchPage(){
       <div class="search-input-wrap"><span>⌕</span><input id="contentSearchInput" type="search" placeholder="Search movies, series, anime..." value="${safeText(activeSearchQuery)}" autocomplete="off"></div>
       <button class="search-mic" id="searchMic" aria-label="Voice search">♩</button>
     </div>
-    <div class="search-trending"><h3 class="search-small-title">🔥 Everyone is searching</h3><div class="search-chips">${chips.map(c=>`<button class="search-chip" data-search-chip="${safeText(c)}">${safeText(c)}</button>`).join('')}</div></div>
-    <nav class="search-categories">${cats.map(([n,i])=>`<button class="search-category ${activeSearchCategory===n?'active':''}" data-search-category="${safeText(n)}">${i} &nbsp;${safeText(n)}</button>`).join('')}</nav>
+    <div class="search-tiles" id="searchTiles" ${abSearchTilesData().length?'':'hidden'}>${abTilesHtml()}</div>
+    <div class="search-notice" id="searchNoticeSlider" hidden></div>
+    <div class="search-trending" id="searchChipsBox" ${abSearchChipsData().chips.length?'':'hidden'}>${abChipsHtml()}</div>
+    <nav class="search-categories">${cats.map(([n,i])=>`<button class="search-category ${activeSearchCategory===n?'active':''}" data-search-category="${safeText(n)}">${i} &nbsp;${safeText(n)}<span class="search-cat-count" data-cat-count="${safeText(n)}"></span></button>`).join('')}</nav>
     <div class="search-results" id="searchResults"></div>
   </section>`;
   document.getElementById('searchBack').addEventListener('click', e => { e.preventDefault(); navigateTo('/home'); });
   const input = document.getElementById('contentSearchInput');
   input.addEventListener('input', () => { activeSearchQuery = input.value; updateSearchResults(); });
-  content.querySelectorAll('[data-search-chip]').forEach(b => b.addEventListener('click', () => {
-    activeSearchQuery = b.dataset.searchChip; input.value = activeSearchQuery; updateSearchResults(); input.focus();
-  }));
+  abBindSearchTilesChips();
   content.querySelectorAll('[data-search-category]').forEach(b => b.addEventListener('click', () => {
     activeSearchCategory = b.dataset.searchCategory;
     content.querySelectorAll('[data-search-category]').forEach(x => x.classList.toggle('active', x===b));
@@ -805,10 +1007,12 @@ function renderSearchPage(){
     rec.onresult = e => { activeSearchQuery = e.results[0][0].transcript; input.value = activeSearchQuery; updateSearchResults(); };
     rec.start();
   });
+  abRenderNoticeSlider();
   updateSearchResults();
 }
 function updateSearchResults(){
   const grid = document.getElementById('searchResults'); if (!grid) return;
+  abUpdateSearchCounts();
   const q = activeSearchQuery.trim().toLowerCase();
   let items = (latestContentItems||[]).filter(item => {
     const title = String(cardTitle(item)).toLowerCase();
@@ -859,6 +1063,7 @@ function detailArray(item, keys){
 function renderDetailsPage(id, seasonParam, episodeParam){
   stopActiveWatchListeners();
   if (!contentFirstPaintDone){ showPageLoadingSkeleton('details'); return; }
+  abEndBootDetails();
   const item = (latestContentItems||[]).find(x =>
     String(x.id ?? x.key ?? x.contentId ?? '') === String(id) ||
     String(cardTarget(x)) === String(id) ||
@@ -866,7 +1071,8 @@ function renderDetailsPage(id, seasonParam, episodeParam){
   );
   if (!item){ document.getElementById('pageContent').innerHTML='<section class="details-page"><div class="details-not-found">Content not found. Please check that this title exists in Admin and is published.</div></section>'; return; }
   const title=detailText(detailValue(item,['title','name','animeName','movieName','contentTitle']),'Untitled');
-  const poster=cardImage(item) || detailText(item.backdrop,'');
+  const adultCard=abIsAdultCard(item);
+  const poster=adultCard ? '' : (cardImage(item) || detailText(item.backdrop,''));
   const type=detailText(detailValue(item,['typeName','type','contentType','mediaType','kind','category']),'Movie');
   const year=detailText(detailValue(item,['year','releaseYear','releasedYear'],''));
   const rating=detailText(detailValue(item,['rating','imdbRating','score','ratingValue'],''));
@@ -879,6 +1085,9 @@ function renderDetailsPage(id, seasonParam, episodeParam){
   const description=detailText(detailValue(item,['description','overview','storyline','plot','synopsis'],''),'No storyline added yet.');
   const cast=detailArray(item,['cast','actors','voiceActors','staff']);
   const trailer=detailText(detailValue(item,['trailerUrl','trailer','youtubeTrailer'],''));
+  const streamLogo=detailText(detailValue(item,['streamingLogo','ottLogo','platformLogo','tvLogo','networkLogo'],''));
+  const streamName=detailText(detailValue(item,['streamingName','ottName','platformName','tvName','networkName'],''));
+  const streamHtml=/^https?:\/\//i.test(streamLogo)?`<div class="details-stream-logo" title="${safeText(streamName||'Streaming platform')}">${streamName?`<a href="${safeText(ottUrl(streamName))}" aria-label="${safeText(streamName)}">`:''}<img src="${safeText(streamLogo)}" alt="${safeText(streamName||'Streaming platform')}" loading="lazy" decoding="async" onerror="this.closest('.details-stream-logo').style.display='none'">${streamName?'</a>':''}</div>`:'';
   const myListKey='animebox_my_list'; let saved=[]; try{saved=JSON.parse(localStorage.getItem(myListKey)||'[]')}catch(_){}
   const itemId=String(item.id ?? item.key ?? item.contentId ?? id); const inList=saved.includes(itemId);
   // Keep a per-account watch history on this browser, newest first.
@@ -894,7 +1103,7 @@ function renderDetailsPage(id, seasonParam, episodeParam){
     <div class="details-topbar"><button class="details-back" type="button" id="detailsBack">← Back</button><span class="details-topbar-title">${safeText(title)}</span></div>
     <div class="details-shell">
       <aside class="details-poster-wrap">
-        ${poster?`<img class="details-poster ab-img-loading" src="${safeText(poster)}" alt="${safeText(title)} poster" loading="eager" decoding="async" fetchpriority="high" onerror="this.style.visibility='hidden'">`:'<div class="details-poster"></div>'}
+        ${poster?`<img class="details-poster ab-img-loading${abBlurClass(item)}" src="${safeText(poster)}" alt="${safeText(title)} poster" loading="eager" decoding="async" fetchpriority="high" onerror="this.style.visibility='hidden'">`:(adultCard?'<div class="details-poster ab-adult-cover">18+</div>':'<div class="details-poster"></div>')}
         <div class="details-poster-badges">
           ${quality?`<div class="details-badge-row"><span class="details-badge quality">${safeText(quality)}</span></div>`:""}
           <div class="details-badge-row"><span class="details-badge language">${safeText(language)}</span><span class="details-badge type">${safeText(type.toUpperCase())}</span></div>
@@ -914,6 +1123,7 @@ function renderDetailsPage(id, seasonParam, episodeParam){
           <button class="details-btn" type="button" id="detailsSave">${inList?'✓ Added to My List':'+ My List'}</button>
           <button class="details-btn" type="button" id="detailsWatch">▶ Watch Now</button>
         </div>
+        ${streamHtml}
         <div class="details-list">
           ${rating?`<div class="details-list-row">⭐ <b>IMDb:</b> ${safeText(rating)}${String(rating).includes('/')?'':'/10'}</div>`:''}
           ${genre?`<div class="details-list-row">🎬 <b>Genre:</b> ${safeText(genre)}</div>`:''}
@@ -1175,6 +1385,7 @@ function setupAdminWatchPlayer(item,itemId,title,quality,language){
     const section=document.getElementById('episodeScreenshots');
     const list=document.getElementById('episodeScreenshotList');
     if(!section||!list)return;
+    if(abIsAdultCard(typeof item!=='undefined'?item:null)){section.classList.remove('show');list.innerHTML='';return;}
     // Admin Preview Manager saves each episode's previews at episodes/{contentId}/{episodeId}/previews.
     const raw=episode?.previews ?? episode?.screenshots ?? episode?.screenshotImages ?? [];
     let shots=Array.isArray(raw)?raw:(raw&&typeof raw==='object'?Object.values(raw):[]);
@@ -1184,7 +1395,7 @@ function setupAdminWatchPlayer(item,itemId,title,quality,language){
       const image=String(shot.imageUrl||shot.image||shot.thumbnail||'').trim();
       const click=String(shot.clickUrl||shot.url||shot.link||'').trim();
       const name=String(shot.name||('Screenshot '+(i+1)));
-      const img=`<img src="${safeText(image)}" alt="${safeText(name)}" loading="lazy" onerror="this.closest('.episode-screenshot').style.display='none'">`;
+      const img=`<img class="${abIs18Card(typeof item!=='undefined'?item:null)?'ab-blur-18':''}" src="${safeText(image)}" alt="${safeText(name)}" loading="lazy" onerror="this.closest('.episode-screenshot').style.display='none'">`;
       return click&&/^https?:\/\//i.test(click)
         ? `<a class="episode-screenshot" href="${safeText(click)}" target="_blank" rel="noopener noreferrer">${img}<span class="episode-screenshot-name">${safeText(name)}</span></a>`
         : `<div class="episode-screenshot">${img}<span class="episode-screenshot-name">${safeText(name)}</span></div>`;
@@ -1374,12 +1585,39 @@ function setupAdminWatchPlayer(item,itemId,title,quality,language){
 /* ============================================================
    TYPE LIST PAGE
    ============================================================ */
+/* ---------- EXPLORE ABPLAY PAGES (virtual categories, matched by item fields) ---------- */
+function abHay(item, keys){
+  return keys.map(k => { const v = item && item[k]; return Array.isArray(v) ? v.join(' ') : (v==null?'':String(v)); }).join(' | ').toLowerCase();
+}
+const AB_HAY_KEYS = ['type','category','contentType','mediaType','kind','section','genre','genres','tags','language','lang','audio','audioLanguage','dubLanguage','country','status','contentStatus','badge','statusBadge','title','name'];
+const abHas = (item, re, keys) => re.test(abHay(item, keys || AB_HAY_KEYS));
+const abIsType = (item, name) => itemMatchesType(item, {name});
+const EXPLORE_PAGES = [
+  {slug:'live-tv',         name:'Live TV',         match:i => abIsType(i,'TV Show') || abHas(i,/\blive\b/)},
+  {slug:'latest-releases', name:'Latest Releases', match:i => true, defaultSort:'newest'},
+  {slug:'anime-zone',      name:'Anime Zone',      match:i => abIsType(i,'Anime') || abHas(i,/anime|animation/)},
+  {slug:'k-j-c-drama',     name:'K/J/C Drama',     match:i => abHas(i,/korean|k-?drama|japanese|j-?drama|chinese|c-?drama|k\/j\/c/)},
+  {slug:'south-indian',    name:'South Indian',    match:i => abHas(i,/south|tamil|telugu|malayalam|kannada/)},
+  {slug:'bollywood',       name:'Bollywood',       match:i => abHas(i,/bollywood|hindi/)},
+  {slug:'ongoing-series',  name:'Ongoing Series',  match:i => (abIsType(i,'Series') || abIsType(i,'TV Show') || abIsType(i,'Anime')) && abHas(i,/ongoing|running|airing|weekly|new episode/, ['status','contentStatus','badge','statusBadge'])},
+  {slug:'upcoming',        name:'Upcoming',        match:i => abHas(i,/upcoming|coming soon|soon|unreleased/, ['status','contentStatus','badge','statusBadge'])},
+  {slug:'most-watched',    name:'Most Watched',    match:i => Object.keys(abViewTotals).length ? (abViewTotals[abCardId(i)]||0) > 0 : true, defaultSort:'views'},
+  {slug:'dual-audio',      name:'Dual Audio',      match:i => abHas(i,/dual|multi/, ['language','lang','audio','audioLanguage','dubLanguage','badge','title']) || /[,&+\/]/.test(String(firstValue(i,['language','lang','audio','audioLanguage'],'')))},
+  {slug:'bangla',          name:'Bangla',          match:i => abHas(i,/bangla|bengali|\bbn\b/)},
+  {slug:'18-adult',        name:'18+ Adult',       match:i => abIsAdultCard(i) || abIs18Card(i)},
+  {slug:'animation',       name:'Animation',       match:i => abHas(i,/animation|cartoon/)},
+  {slug:'fifa-sports',     name:'FIFA & Sports',   match:i => abHas(i,/fifa|football|soccer|sport|cricket|world cup|premier league|champions league/)}
+];
+function findExplorePage(slugOrName){
+  const k = typeKey(slugOrName);
+  return EXPLORE_PAGES.find(p => typeKey(p.slug)===k || typeKey(p.name)===k) || null;
+}
 const typeFilterState = {};
 function renderTypeListPage(typeName, page=0){
   if (!contentFirstPaintDone){ showPageLoadingSkeleton('type'); return; }
-  const cfg = allHomeTypeConfig().find(x => typeKey(x.name)===typeKey(typeName));
+  const cfg = allHomeTypeConfig().find(x => typeKey(x.name)===typeKey(typeName)) || findExplorePage(typeName) || findOttPage(typeName);
   if (!cfg){ document.getElementById('pageContent').innerHTML='<section class="type-list-page"><p class="type-list-empty">Type not found.</p><button class="type-list-back" id="typeBack2">← Home</button></section>'; document.getElementById('typeBack2')?.addEventListener('click',e=>{e.preventDefault();navigateTo('/home')}); return; }
-  const state = typeFilterState[typeKey(cfg.name)] || (typeFilterState[typeKey(cfg.name)]={genre:'',year:'',audio:'',quality:'',sort:'newest'});
+  const state = typeFilterState[typeKey(cfg.name)] || (typeFilterState[typeKey(cfg.name)]={genre:'',year:'',audio:'',quality:'',sort:cfg.defaultSort||'newest'});
   let matched = (latestContentItems||[]).filter(item => cfg.name==='Trending'
     ? (itemMatchesType(item,cfg)||item.trending===true||item.isTrending===true||String(item.trending).toLowerCase()==='true')
     : itemMatchesType(item,cfg));
@@ -1393,6 +1631,7 @@ function renderTypeListPage(typeName, page=0){
   const yearValue=x=>{const n=parseInt(yearOf(x),10);return Number.isFinite(n)?n:0;};
   const cmpDate=(a,b)=>(abCardUpdateInfo(a)-abCardUpdateInfo(b))||(yearValue(a)-yearValue(b));
   if(state.sort==='oldest') matched.sort((a,b)=>cmpDate(a,b));
+  else if(state.sort==='views') matched.sort((a,b)=>(abViewTotals[abCardId(b)]||0)-(abViewTotals[abCardId(a)]||0));
   else if(state.sort==='title') matched.sort((a,b)=>String(firstValue(a,['title','name'],'')).localeCompare(String(firstValue(b,['title','name'],''))));
   else if(state.sort==='rating') matched.sort((a,b)=>Number(firstValue(b,['rating','imdbRating','score'],0))-Number(firstValue(a,['rating','imdbRating','score'],0)));
   else matched.sort((a,b)=>cmpDate(b,a));
@@ -1403,10 +1642,10 @@ function renderTypeListPage(typeName, page=0){
   const uniqueVals=(fn)=>[...new Set((latestContentItems||[]).filter(x=>cfg.name==='Trending'?(itemMatchesType(x,cfg)||x.trending===true||x.isTrending===true):itemMatchesType(x,cfg)).flatMap(x=>fn(x).split(/[,|]/).map(v=>v.trim()).filter(Boolean)))].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
   const opts=(values,selected,label)=>`<option value="">${label}</option>`+values.map(v=>`<option value="${safeText(v)}" ${v===selected?'selected':''}>${safeText(v)}</option>`).join('');
   const content = document.getElementById('pageContent');
-  content.innerHTML = `<section class="type-list-page"><div class="type-list-head"><button class="type-list-back" id="typeBack">← Back</button><h1 class="type-list-title">${safeText(cfg.name)}</h1></div><div class="type-list-toolbar"><select class="type-filter-select" data-filter-key="genre">${opts(uniqueVals(genreOf),state.genre,'☷ All Genres')}</select><select class="type-filter-select" data-filter-key="year">${opts(uniqueVals(yearOf),state.year,'▣ All Years')}</select><select class="type-filter-select" data-filter-key="audio">${opts(uniqueVals(audioOf),state.audio,'◎ All Audio')}</select><select class="type-filter-select" data-filter-key="quality">${opts(uniqueVals(qualityOf),state.quality,'▣ All Quality')}</select><select class="type-filter-select" data-filter-key="sort"><option value="newest" ${state.sort==='newest'?'selected':''}>☷ Newest</option><option value="oldest" ${state.sort==='oldest'?'selected':''}>Oldest</option><option value="rating" ${state.sort==='rating'?'selected':''}>★ Top Rated</option><option value="title" ${state.sort==='title'?'selected':''}>A–Z Title</option></select><button class="type-filter-reset" id="typeFilterReset">Reset</button></div><div class="type-filter-count">${matched.length} titles</div><div class="type-list-grid" id="typeListGrid"></div>${matched.length ? `<div class="type-pagination">${Array.from({length:totalPages},(_,i)=>`<button class="type-page-btn ${i===page?'active':''}" data-page-number="${i}">${i+1}</button>`).join('')}</div>` : '<div class="type-list-empty">No content matches these filters.</div>'}</section>`;
+  content.innerHTML = `<section class="type-list-page"><div class="type-list-head"><button class="type-list-back" id="typeBack">← Back</button><h1 class="type-list-title">${safeText(cfg.name)}</h1></div><div class="type-list-toolbar"><select class="type-filter-select" data-filter-key="genre">${opts(uniqueVals(genreOf),state.genre,'☷ All Genres')}</select><select class="type-filter-select" data-filter-key="year">${opts(uniqueVals(yearOf),state.year,'▣ All Years')}</select><select class="type-filter-select" data-filter-key="audio">${opts(uniqueVals(audioOf),state.audio,'◎ All Audio')}</select><select class="type-filter-select" data-filter-key="quality">${opts(uniqueVals(qualityOf),state.quality,'▣ All Quality')}</select><select class="type-filter-select" data-filter-key="sort"><option value="newest" ${state.sort==='newest'?'selected':''}>☷ Newest</option><option value="oldest" ${state.sort==='oldest'?'selected':''}>Oldest</option><option value="views" ${state.sort==='views'?'selected':''}>👁 Most Viewed</option><option value="rating" ${state.sort==='rating'?'selected':''}>★ Top Rated</option><option value="title" ${state.sort==='title'?'selected':''}>A–Z Title</option></select><button class="type-filter-reset" id="typeFilterReset">Reset</button></div><div class="type-filter-count">${matched.length} titles</div><div class="type-list-grid" id="typeListGrid"></div>${matched.length ? `<div class="type-pagination">${Array.from({length:totalPages},(_,i)=>`<button class="type-page-btn ${i===page?'active':''}" data-page-number="${i}">${i+1}</button>`).join('')}</div>` : '<div class="type-list-empty">No content matches these filters.</div>'}</section>`;
   document.getElementById('typeBack').addEventListener('click', e => { e.preventDefault(); navigateTo('/home'); });
   content.querySelectorAll('[data-filter-key]').forEach(el=>el.addEventListener('change',()=>{state[el.dataset.filterKey]=el.value;renderTypeListPage(cfg.name,0);}));
-  document.getElementById('typeFilterReset')?.addEventListener('click',()=>{Object.assign(state,{genre:'',year:'',audio:'',quality:'',sort:'newest'});renderTypeListPage(cfg.name,0);});
+  document.getElementById('typeFilterReset')?.addEventListener('click',()=>{Object.assign(state,{genre:'',year:'',audio:'',quality:'',sort:cfg.defaultSort||'newest'});renderTypeListPage(cfg.name,0);});
   const grid = document.getElementById('typeListGrid');
   allPageConfig = {...cfg, rail:'__typeListTempRail', empty:'', emptyElement:null, page:0, randomizedItems:pageItems};
   const temp = document.createElement('div'); temp.className='home-type-section'; temp.innerHTML='<div class="home-type-rail" id="__typeListTempRail"></div>'; temp.hidden=true; document.body.appendChild(temp);
@@ -1416,6 +1655,93 @@ function renderTypeListPage(typeName, page=0){
   temp.remove(); allPageConfig = null;
   grid.querySelectorAll('a.home-type-card').forEach(a => a.addEventListener('click', e => { const href=a.getAttribute('href'); if(href&&href.startsWith('/')){e.preventDefault();navigateTo(href);} }));
   content.querySelectorAll('[data-page-number]').forEach(b=>b.addEventListener('click',()=>renderTypeListPage(cfg.name,Number(b.dataset.pageNumber))));
+}
+
+/* ============================================================
+   TOP 10 THIS WEEK
+   Rank = views in the last 7 days (UTC day buckets: views/{id}/days/{YYYY-MM-DD}),
+   then total views. Admin can pin a card to a position (card.topPin = 1..10).
+   ============================================================ */
+const abViewWeek = Object.create(null);     // contentId -> views during the last 7 UTC days
+function abWeekCutoff(){ return new Date(Date.now()-6*86400000).toISOString().slice(0,10); }
+function abWeekSum(days){
+  if(!days||typeof days!=='object') return 0;
+  const cut=abWeekCutoff(); let n=0;
+  Object.keys(days).forEach(k=>{ if(k>=cut) n+=Math.max(0,Number(days[k])||0); });
+  return n;
+}
+function abTopTenItems(items){
+  const list=(Array.isArray(items)?items:[]).filter(i=>i&&i.enabled!==false&&String(i.enabled).toLowerCase()!=='false'&&cardImage(i));
+  const pinOf=i=>{const n=Math.floor(Number(i.topPin)); return n>=1&&n<=10?n:0;};
+  const slots=new Array(10).fill(null), pinnedIds=new Set();
+  list.filter(pinOf).sort((a,b)=>pinOf(a)-pinOf(b)).forEach(i=>{
+    let idx=pinOf(i)-1; while(idx<10&&slots[idx]) idx++;
+    if(idx<10){ slots[idx]=i; pinnedIds.add(abCardId(i)); }
+  });
+  const rest=list.filter(i=>!pinnedIds.has(abCardId(i)))
+    .map(i=>({i,w:abViewWeek[abCardId(i)]||0,t:abViewTotals[abCardId(i)]||0}))
+    .filter(x=>x.w>0||x.t>0)
+    .sort((a,b)=>(b.w-a.w)||(b.t-a.t)||(abCardUpdateInfo(b.i)-abCardUpdateInfo(a.i)))
+    .map(x=>x.i);
+  let r=0; for(let k=0;k<10&&r<rest.length;k++){ if(!slots[k]) slots[k]=rest[r++]; }
+  return slots.filter(Boolean).map(i=>({item:i,pinned:pinnedIds.has(abCardId(i))}));
+}
+function renderTopTen(items){
+  const box=document.getElementById('abTopTenSection'); if(!box) return;
+  const top=abTopTenItems(items||latestContentItems);
+  if(!top.length){ box.hidden=true; box.innerHTML=''; return; }
+  box.hidden=false;
+  box.innerHTML=`<div class="ab-top10-head"><h2 class="ab-top10-title"><span class="ab-top10-trophy">🏆</span>TOP 10 THIS WEEK</h2></div><div class="ab-top10-rail">${top.map((t,k)=>`<div class="ab-top10-item"><span class="ab-top10-rank" aria-hidden="true">${k+1}</span>${abHomeCardHtml(t.item,{pinned:t.pinned})}</div>`).join('')}</div>`;
+  box.querySelectorAll('a.home-type-card').forEach(a=>a.addEventListener('click',e=>{const href=a.getAttribute('href');if(href&&href.startsWith('/')){e.preventDefault();navigateTo(href);}}));
+  if(typeof initImageLoadingEffects==='function'){ try{ initImageLoadingEffects(box); }catch(_){} }
+}
+
+/* ============================================================
+   WATCH BY OTT  (logos come from Admin: card.streamingName / card.streamingLogo)
+   ============================================================ */
+function ottNameOf(item){ return String(firstValue(item,['streamingName','ottName','platformName','tvName','networkName'],'')).trim(); }
+function ottLogoOf(item){ return String(firstValue(item,['streamingLogo','ottLogo','platformLogo','tvLogo','networkLogo'],'')).trim(); }
+function ottSlugOf(name){ return slugify(name); }
+function ottUrl(name){ return '/'+ottSlugOf(name); }
+function getOttPlatforms(items){
+  const list=Array.isArray(items)?items:(latestContentItems||[]);
+  const map=new Map(), weekAgo=Date.now()-7*24*60*60*1000;
+  list.forEach(item=>{
+    const name=ottNameOf(item); if(!name || item?.enabled===false) return;
+    const slug=ottSlugOf(name);
+    let e=map.get(slug); if(!e){ e={slug,name,logo:'',count:0,newCount:0,latest:0}; map.set(slug,e); }
+    const logo=ottLogoOf(item); if(!e.logo && /^https?:\/\//i.test(logo)) e.logo=logo;
+    e.count++;
+    let t=0; try{ t=abCardUpdateInfo(item)||0; }catch(_){}
+    if(t>weekAgo) e.newCount++;
+    if(t>e.latest) e.latest=t;
+  });
+  return [...map.values()].sort((a,b)=>(b.newCount-a.newCount)||(b.count-a.count)||a.name.localeCompare(b.name));
+}
+function findOttPage(slugOrName){
+  const k=typeKey(slugOrName);
+  const e=getOttPlatforms().find(p=>typeKey(p.slug)===k||typeKey(p.name)===k);
+  if(!e) return null;
+  const slug=e.slug;
+  return {name:e.name, slug, ott:true, logo:e.logo, defaultSort:'newest', match:i=>ottSlugOf(ottNameOf(i))===slug};
+}
+function ottBubbleHtml(p){
+  const badge=p.newCount>0?`<span class="ab-ott-badge">NEW ${p.newCount}</span>`:`<span class="ab-ott-badge total">${p.count} TITLE${p.count>1?'S':''}</span>`;
+  return `<a class="ab-ott-item" href="${safeText(ottUrl(p.name))}" title="${safeText(p.name)}"><span class="ab-ott-circle"><img src="${safeText(p.logo)}" alt="${safeText(p.name)}" loading="lazy" decoding="async" onerror="this.style.visibility='hidden'"></span>${badge}<span class="ab-ott-name">${safeText(p.name)}</span></a>`;
+}
+function renderOttRow(items){
+  const box=document.getElementById('abOttSection'); if(!box) return;
+  const platforms=getOttPlatforms(items).filter(p=>p.logo);
+  if(!platforms.length){ box.hidden=true; box.innerHTML=''; return; }
+  box.hidden=false;
+  box.innerHTML=`<div class="ab-ott-head"><h2 class="ab-ott-title">WATCH BY OTT</h2><a class="ab-ott-all" href="/platforms">All platforms →</a></div><div class="ab-ott-rail">${platforms.map(ottBubbleHtml).join('')}</div>`;
+}
+function renderPlatformsPage(){
+  if (!contentFirstPaintDone){ showPageLoadingSkeleton('type'); return; }
+  const platforms=getOttPlatforms().filter(p=>p.logo);
+  const content=document.getElementById('pageContent');
+  content.innerHTML=`<section class="type-list-page"><div class="type-list-head"><button class="type-list-back" id="platformsBack">← Back</button><h1 class="type-list-title">All Platforms</h1></div>${platforms.length?`<div class="ab-ott-grid">${platforms.map(ottBubbleHtml).join('')}</div>`:'<p class="type-list-empty">No platforms added yet.</p>'}</section>`;
+  document.getElementById('platformsBack')?.addEventListener('click',e=>{e.preventDefault();navigateTo('/home');});
 }
 
 /* ============================================================
@@ -1440,8 +1766,11 @@ function parseDetailPath(path){
 function showHomeSections(visible){
   const hw = document.querySelector('.hero-wrap');
   const ht = document.querySelector('.home-types');
-  if (visible){ hw?.removeAttribute('hidden'); ht?.removeAttribute('hidden'); }
-  else { hw?.setAttribute('hidden',''); ht?.setAttribute('hidden',''); }
+  const ex = document.querySelector('.ab-explore');
+  const ot = document.getElementById('abOttSection');
+  const tt = document.getElementById('abTopTenSection');
+  if (visible){ if(tt && tt.innerHTML.trim()) tt.removeAttribute('hidden'); hw?.removeAttribute('hidden'); ht?.removeAttribute('hidden'); ex?.removeAttribute('hidden'); if(ot && ot.innerHTML.trim()) ot.removeAttribute('hidden'); }
+  else { hw?.setAttribute('hidden',''); ht?.setAttribute('hidden',''); ex?.setAttribute('hidden',''); ot?.setAttribute('hidden',''); tt?.setAttribute('hidden',''); }
 }
 function findTypeBySlug(slug){
   const norm = s => String(s ?? '').trim().toLowerCase().replace(/[^a-z0-9]+/g,'');
@@ -1455,22 +1784,31 @@ function setActiveNav(page){
   document.querySelectorAll('[data-page]').forEach(el => el.classList.toggle('active', el.dataset.page===page));
 }
 
+// Remove the static default details page (index.html) once the real page is rendered.
+function abEndBootDetails(){
+  document.documentElement.classList.remove('ab-boot-details');
+  const box = document.getElementById('abBootDetails');
+  if (box) box.remove();
+}
 function routePage(){
   const path = currentPath();
   const content = document.getElementById('pageContent');
   if (!content) return;
   document.body.classList.toggle('search-active', path === '/search');
   const detailInfo = parseDetailPath(path);
+  if (!detailInfo) abEndBootDetails();
   const builtinSlugs = builtinTypeConfig.map(t => slugify(t.name));
   const adminSlugs = (adminTypes||[]).map(t => slugify(t.name));
   const allSlugs = [...new Set([...builtinSlugs, ...adminSlugs])];
-  let typeSlug = null;
-  if (path !== '/' && path !== '/home' && !path.startsWith('/details') && !path.startsWith('/home/detail') && path !== '/search' && path !== '/profile' && path !== '/member-login' && path !== '/leaderboard'){
+  let typeSlug = null, exploreSlug = null, ottSlug = null;
+  if (path !== '/' && path !== '/home' && !path.startsWith('/details') && !path.startsWith('/home/detail') && path !== '/search' && path !== '/profile' && path !== '/member-login' && path !== '/leaderboard' && path !== '/platforms'){
     const seg = path.slice(1).split('/')[0];
     if (allSlugs.includes(seg)) typeSlug = seg;
+    else if (findExplorePage(seg)) exploreSlug = seg;
+    else if (findOttPage(seg)) ottSlug = seg;
   }
   if (!detailInfo) stopActiveWatchListeners();
-  const leavingHome = detailInfo || path === '/search' || typeSlug || path === '/profile' || path === '/member-login' || path === '/leaderboard';
+  const leavingHome = detailInfo || path === '/search' || typeSlug || exploreSlug || ottSlug || path === '/platforms' || path === '/profile' || path === '/member-login' || path === '/leaderboard';
   if (leavingHome && content.querySelector('.hero-wrap')) {
     cachedHomeMarkup = content.innerHTML;
     clearInterval(heroTimer);
@@ -1482,6 +1820,9 @@ function routePage(){
   if (path === '/profile' || path === '/member-login'){ showHomeSections(false); setActiveNav('profile'); renderProfilePage(); return; }
   if (path === '/leaderboard'){ showHomeSections(false); setActiveNav('profile'); renderLeaderboardPage(); return; }
   if (typeSlug){ showHomeSections(false); setActiveNav(''); renderTypeListPage(findTypeBySlug(typeSlug)); return; }
+  if (exploreSlug){ showHomeSections(false); setActiveNav(''); renderTypeListPage(findExplorePage(exploreSlug).name); return; }
+  if (ottSlug){ showHomeSections(false); setActiveNav(''); renderTypeListPage(findOttPage(ottSlug).name); return; }
+  if (path === '/platforms'){ showHomeSections(false); setActiveNav(''); renderPlatformsPage(); return; }
   if (path === '/home' || path === '/'){
     showHomeSections(true); setActiveNav('home');
     if (!content.querySelector('.hero-wrap')){
@@ -1490,6 +1831,8 @@ function routePage(){
         // Rebuild only admin-defined rails; the restored hero markup/state is left intact.
         renderCustomTypeSections();
         renderHomeTypeCards(latestContentItems);
+        renderOttRow(latestContentItems);
+        renderTopTen(latestContentItems);
       }
     }
     const hs = document.getElementById('heroSlider');
@@ -1502,6 +1845,8 @@ function routePage(){
     }
     return;
   }
+  // Direct visit to /<platform> before content has loaded: wait (routePage runs again after first paint) instead of redirecting.
+  if (!contentFirstPaintDone && /^\/[^/]+$/.test(path)){ showHomeSections(false); showPageLoadingSkeleton('type'); return; }
   navigateTo('/home', true);
 }
 
@@ -1686,7 +2031,7 @@ let passwordResetEmail = '';
 function renderPasswordResetPage(email=''){
   const content=document.getElementById('pageContent'); if(!content)return;
   passwordResetEmail=String(email||'').trim();
-  content.innerHTML=`<section class="auth-page"><div class="auth-card"><div class="auth-brand-mark auth-brand-left">AB <span>ACCOUNT RECOVERY</span></div><h1 class="auth-title">Forgot Password?</h1><p class="auth-subtitle">তোমার AnimeBox অ্যাকাউন্টের ইমেইল দাও। Supabase থেকে password reset link পাঠানো হবে।</p><form id="abResetEmailForm" class="auth-form"><input id="abResetEmail" type="email" autocomplete="email" placeholder="Registered Email Address" value="${safeText(passwordResetEmail)}" required><div id="abResetMessage" class="auth-status info" hidden></div><button class="auth-primary-btn" id="abResetSend" type="submit">SEND RESET LINK</button></form><button class="auth-secondary-btn" id="abResetBack">Back to Login</button><p class="auth-terms">AB • AnimeBox Account Security</p></div></section>`;
+  content.innerHTML=`<section class="auth-page"><div class="auth-card"><div class="auth-brand-mark auth-brand-left">AB <span>ACCOUNT RECOVERY</span></div><h1 class="auth-title">Forgot Password?</h1><p class="auth-subtitle">তোমার AB PLAY অ্যাকাউন্টের ইমেইল দাও। Supabase থেকে password reset link পাঠানো হবে।</p><form id="abResetEmailForm" class="auth-form"><input id="abResetEmail" type="email" autocomplete="email" placeholder="Registered Email Address" value="${safeText(passwordResetEmail)}" required><div id="abResetMessage" class="auth-status info" hidden></div><button class="auth-primary-btn" id="abResetSend" type="submit">SEND RESET LINK</button></form><button class="auth-secondary-btn" id="abResetBack">Back to Login</button><p class="auth-terms">AB PLAY • Account Security</p></div></section>`;
   const show=(msg,kind='info')=>{const el=document.getElementById('abResetMessage');if(el){el.textContent=msg;el.className='auth-status '+kind;el.hidden=!msg;}};
   document.getElementById('abResetBack')?.addEventListener('click',()=>{authViewMode='login';renderProfilePage();});
   document.getElementById('abResetEmailForm')?.addEventListener('submit',async e=>{e.preventDefault();passwordResetEmail=document.getElementById('abResetEmail').value.trim();const btn=document.getElementById('abResetSend');btn.disabled=true;btn.textContent='SENDING…';try{await animeBoxAuth.sendPasswordResetEmail(passwordResetEmail,location.origin+'/');show('ইমেইলটি যদি নিবন্ধিত থাকে, reset link পাঠানো হয়েছে। Inbox/Spam দেখো। লিংকে ক্লিক করে নতুন password সেট করো।','success');}catch(err){show(authErrorText(err),'error');}finally{btn.disabled=false;btn.textContent='SEND RESET LINK';}});
@@ -1703,7 +2048,7 @@ function renderProfilePage(){
   showHomeSections(false);
   const user = animeBoxAuth.currentUser;
   if(user){
-    const display = user.displayName || (user.email ? user.email.split('@')[0] : 'AnimeBox User');
+    const display = user.displayName || (user.email ? user.email.split('@')[0] : 'AB PLAY User');
     const initial = display.trim().charAt(0).toUpperCase() || 'U';
     let savedPhoto = user.photoURL || '';
     try { savedPhoto = localStorage.getItem('ab_profile_photo_' + (user.uid || 'user')) || savedPhoto; } catch(e) {}
@@ -1720,8 +2065,8 @@ function renderProfilePage(){
         <button class="ab-profile-link ab-coin" type="button"><span class="ab-link-icon">🪙</span><span><b>Your Coin Balance</b><small>Rewards will be available later</small></span><strong>0</strong><i>›</i></button>
         <button class="ab-profile-link ab-support" type="button"><span class="ab-link-icon">➤</span><span><b>Team Support</b><small>Having issues? Contact us here</small></span><i>›</i></button>
         <div class="ab-profile-info"><h3>♙ &nbsp; MY ACCOUNT CREDENTIALS</h3><div><span>Profile Name</span><b>${safeText(display)}</b></div><div><span>Registered Email</span><b>${safeText(user.email || '—')}</b></div><div><span>Account Password</span><b>••••••••</b></div><div><span>Member Since</span><b>${user.metadata && user.metadata.creationTime ? new Date(user.metadata.creationTime).toLocaleDateString() : '—'}</b></div></div>
-        <div class="ab-profile-info"><h3>♢ &nbsp; SECURITY INFORMATION</h3><div><span>Account Status</span><b class="ab-blue-text">${user.emailVerified ? 'Verified' : 'Active'}</b></div><div><span>Platform</span><b>AnimeBox</b></div><div class="ab-security-grid"><div class="ab-security-item"><span>Device</span><b id="abSecDevice">Detecting…</b></div><div class="ab-security-item"><span>OS</span><b id="abSecOS">Detecting…</b></div><div class="ab-security-item"><span>Browser</span><b id="abSecBrowser">Detecting…</b></div><div class="ab-security-item"><span>Virtual IP / Public IP</span><b id="abSecIP">Not checked</b></div><div class="ab-security-item"><span>Privacy Law</span><b>Privacy policy applies; GDPR depends on eligibility</b></div><div class="ab-security-item"><span>Encryption Standard</span><b id="abSecEncryption">Connection status checking…</b></div></div></div>
-        <div id="authStatusMessage" class="auth-status ${authStatusKind}" ${authStatusMessage?'':'hidden'}>${safeText(authStatusMessage)}</div><button class="auth-secondary-btn" id="authHomeBtn" type="button">Home-এ ফিরে যাও</button><div id="abAdminProfileButtons"></div><p class="auth-terms">AB • AnimeBox Account</p>
+        <div class="ab-profile-info"><h3>♢ &nbsp; SECURITY INFORMATION</h3><div><span>Account Status</span><b class="ab-blue-text">${user.emailVerified ? 'Verified' : 'Active'}</b></div><div><span>Platform</span><b>AB PLAY</b></div><div class="ab-security-grid"><div class="ab-security-item"><span>Device</span><b id="abSecDevice">Detecting…</b></div><div class="ab-security-item"><span>OS</span><b id="abSecOS">Detecting…</b></div><div class="ab-security-item"><span>Browser</span><b id="abSecBrowser">Detecting…</b></div><div class="ab-security-item"><span>Virtual IP / Public IP</span><b id="abSecIP">Not checked</b></div><div class="ab-security-item"><span>Privacy Law</span><b>Privacy policy applies; GDPR depends on eligibility</b></div><div class="ab-security-item"><span>Encryption Standard</span><b id="abSecEncryption">Connection status checking…</b></div></div></div>
+        <div id="authStatusMessage" class="auth-status ${authStatusKind}" ${authStatusMessage?'':'hidden'}>${safeText(authStatusMessage)}</div><button class="auth-secondary-btn" id="authHomeBtn" type="button">Home-এ ফিরে যাও</button><div id="abAdminProfileButtons"></div><p class="auth-terms">AB PLAY • Account</p>
       </div></section>`;
     // Populate device/browser information from this browser; never claim encryption not verified.
     try {
@@ -1746,7 +2091,7 @@ function renderProfilePage(){
     const renderWatchHistory=()=>{
       const holder=document.getElementById('abWatchHistoryList'); if(!holder)return;
       let items=[]; try{items=JSON.parse(localStorage.getItem(historyKey)||'[]')}catch(_){}
-      holder.innerHTML=items.length?items.slice(0,12).map(x=>`<button type="button" class="ab-history-card" data-history-url="${safeText(x.url||('/details/'+encodeURIComponent(x.id)))}"><span class="ab-history-poster">${x.poster?`<img src="${safeText(x.poster)}" alt="" loading="lazy">`:'<span>▶</span>'}</span><span class="ab-history-title">${safeText(x.title||'Untitled')}</span><small>${safeText(x.type||'Anime')}</small></button>`).join(''):'<p class="ab-history-empty">এখনও কোনো Movie বা Anime দেখা হয়নি।</p>';
+      holder.innerHTML=items.length?items.slice(0,12).map(x=>`<button type="button" class="ab-history-card" data-history-url="${safeText(x.url||('/details/'+encodeURIComponent(x.id)))}"><span class="ab-history-poster">${abHistoryPoster(x)?`<img class="${abIs18Card(abHistoryItem(x))?'ab-blur-18':''}" src="${safeText(abHistoryPoster(x))}" alt="" loading="lazy">`:'<span>▶</span>'}</span><span class="ab-history-title">${safeText(x.title||'Untitled')}</span><small>${safeText(x.type||'Anime')}</small></button>`).join(''):'<p class="ab-history-empty">এখনও কোনো Movie বা Anime দেখা হয়নি।</p>';
       holder.querySelectorAll('[data-history-url]').forEach(btn=>btn.addEventListener('click',()=>navigateTo(btn.getAttribute('data-history-url'))));
     };
     renderWatchHistory();
@@ -1754,7 +2099,7 @@ function renderProfilePage(){
     loadAdminProfileButtons();
     document.getElementById('abPhotoEdit')?.addEventListener('click',()=>document.getElementById('abPhotoInput')?.click());
     document.getElementById('abNameEdit')?.addEventListener('click',async()=>{
-      const currentName=user.displayName || (user.email ? user.email.split('@')[0] : 'AnimeBox User');
+      const currentName=user.displayName || (user.email ? user.email.split('@')[0] : 'AB PLAY User');
       const nextName=window.prompt('নতুন Profile Name লিখো:',currentName);
       if(nextName===null) return;
       const cleanName=nextName.trim();
@@ -1800,7 +2145,7 @@ function renderProfilePage(){
         <div id="authStatusMessage" class="auth-status ${authStatusKind}" ${authStatusMessage?'':'hidden'}>${safeText(authStatusMessage)}</div>
         <button class="auth-primary-btn" id="authSubmitBtn" type="submit">${signup?'REGISTER PROFILE':'SIGN IN'}</button>
       </form>
-      <p class="auth-terms">AB • AnimeBox Account</p><p class="auth-switch-line">${signup?'Registered user?':'New to AB?'} <button type="button" id="authSwitchLink">${signup?'Sign In Here':'Create an Account'}</button></p>
+      <p class="auth-terms">AB PLAY • Account</p><p class="auth-switch-line">${signup?'Registered user?':'New to AB?'} <button type="button" id="authSwitchLink">${signup?'Sign In Here':'Create an Account'}</button></p>
     </div></section>`;
   document.getElementById('authLoginTab')?.addEventListener('click',()=>{authViewMode='login';authStatusMessage='';renderProfilePage();});
   document.getElementById('authSignupTab')?.addEventListener('click',()=>{authViewMode='signup';authStatusMessage='';renderProfilePage();});
@@ -1842,7 +2187,7 @@ function syncLiveUserProfile(user){
   // Do not overwrite a custom profile photo with an empty Supabase Auth photoURL.
   ref.once('value').then(snap=>{
     const existing=snap.val()||{};
-    const profile={uid:user.uid,name:user.displayName||(user.email?user.email.split('@')[0]:'AnimeBox User'),email:user.email||'',photo:user.photoURL||existing.photo||existing.photoURL||existing.avatar||'',online:true,lastSeen:Date.now(),createdAt:(existing.createdAt||(user.metadata&&user.metadata.creationTime)||'')};
+    const profile={uid:user.uid,name:user.displayName||(user.email?user.email.split('@')[0]:'AB PLAY User'),email:user.email||'',photo:user.photoURL||existing.photo||existing.photoURL||existing.avatar||'',online:true,lastSeen:Date.now(),createdAt:(existing.createdAt||(user.metadata&&user.metadata.creationTime)||'')};
     return ref.update(profile);
   }).catch(err=>console.warn('Live user profile sync failed:',err.message));
 }
@@ -1871,6 +2216,7 @@ function applyContentSnapshot(content){
   });
   latestContentItems = incoming;
   if (!unchanged) renderHomeTypeCards(incoming);
+  if (!unchanged) { try{ renderOttRow(incoming); }catch(e){ console.warn('OTT row failed',e); } try{ renderTopTen(incoming); }catch(e){ console.warn('Top 10 failed',e); } }
   if (!unchanged) {
     const heroSlider = document.getElementById('heroSlider');
     if (heroSlider && heroSlider.offsetParent !== null){
@@ -1895,6 +2241,8 @@ function renderHomeNotice(cfg){
   box.style.setProperty('--notice-duration',Math.max(8,Math.min(60,Number(cfg.duration)||18))+'s');
 }
 db.ref('settings/homeNotice').on('value',snap=>renderHomeNotice(snap.val()),err=>console.warn('Home notice load failed:',err));
+db.ref('settings/noticeSlider').on('value',snap=>{ abNoticeSliderCfg=snap.val(); abRenderNoticeSlider(); },err=>console.warn('Notice slider load failed:',err));
+db.ref('settings/searchPage').on('value',snap=>{ abSearchPageCfg=snap.val(); abRenderSearchTilesChips(); },err=>console.warn('Search page settings load failed:',err));
 
 // Season/episode records live outside content/, so watch them and keep the newest
 // admin timestamp (updatedAt / ab_<time>_ id) per card.
@@ -1933,18 +2281,22 @@ db.ref('settings/homeNotice').on('value',snap=>renderHomeNotice(snap.val()),err=
 
 // Live view totals (synced across users and devices through the shared document).
 db.ref('views').on('value', snap => {
-  const root = snap.val(), next = {};
+  const root = snap.val(), next = {}, nextWeek = {};
   if (root && typeof root==='object') Object.keys(root).forEach(id => {
     const row = root[id]; if (!row || typeof row!=='object') return;
     let t = Number(row.total);
     if (!Number.isFinite(t)) t = Object.values(row.episodes || {}).reduce((a,b) => a + (Number(b) || 0), 0);
     next[id] = Math.max(0, t);
+    const w = abWeekSum(row.days); if (w > 0) nextWeek[id] = w;
   });
   Object.keys(abViewTotals).forEach(k => delete abViewTotals[k]);
   Object.assign(abViewTotals, next);
+  Object.keys(abViewWeek).forEach(k => delete abViewWeek[k]);
+  Object.assign(abViewWeek, nextWeek);
   abViewsReady = true;
   try{ localStorage.setItem(AB_VIEW_CACHE_KEY, JSON.stringify(next)); }catch(_){}
   abApplyViewTotals();
+  try{ renderTopTen(latestContentItems); }catch(e){ console.warn('Top 10 failed',e); }
 }, err => { abViewsReady = true; abApplyViewTotals(); console.warn('View counts could not load:', err); });
 
 // One live Supabase listener handles both first paint and future updates (avoids duplicate full reads).
@@ -2008,12 +2360,12 @@ function abRenderNotifications(){
   if(!count||!list)return;
   const read=abGetReadIds();const unread=abNotificationItems.filter(n=>!read.has(n.id)).length;
   count.textContent=unread>99?'99+':String(unread);count.hidden=unread===0;
-  if(subtitle)subtitle.textContent=unread?`${unread} unread · Latest AnimeBox updates`:'You are all caught up';
+  if(subtitle)subtitle.textContent=unread?`${unread} unread · Latest AB PLAY updates`:'You are all caught up';
   if(!abNotificationItems.length){list.innerHTML='<div class="ab-notification-empty"><span>🔔</span><b>No notifications yet</b><small>New Movie, Anime and Series updates will appear here.</small></div>';return;}
   list.innerHTML=abNotificationItems.slice(0,50).map(n=>{
     const isRead=read.has(n.id);const image=n.image?`<img src="${abNotificationEscape(n.image)}" alt="" loading="lazy" onerror="this.style.display='none'">`:'<div class="ab-notification-thumb-fallback">🔔</div>';
     const time=n.createdAt?new Date(Number(n.createdAt)).toLocaleString():'Recently';
-    return `<button type="button" class="ab-notification-item ${isRead?'is-read':'is-unread'}" data-notification-id="${abNotificationEscape(n.id)}">${image}<span class="ab-notification-copy"><b>${abNotificationEscape(n.title||'AnimeBox Update')}</b><span>${abNotificationEscape(n.message||'')}</span><small>${abNotificationEscape(n.type||'Update')} · ${abNotificationEscape(time)}</small></span>${isRead?'':'<i aria-label="Unread"></i>'}</button>`;
+    return `<button type="button" class="ab-notification-item ${isRead?'is-read':'is-unread'}" data-notification-id="${abNotificationEscape(n.id)}">${image}<span class="ab-notification-copy"><b>${abNotificationEscape(n.title||'AB PLAY Update')}</b><span>${abNotificationEscape(n.message||'')}</span><small>${abNotificationEscape(n.type||'Update')} · ${abNotificationEscape(time)}</small></span>${isRead?'':'<i aria-label="Unread"></i>'}</button>`;
   }).join('');
   list.querySelectorAll('[data-notification-id]').forEach(btn=>btn.addEventListener('click',()=>{
     const item=abNotificationItems.find(n=>n.id===btn.dataset.notificationId);if(!item)return;
@@ -2026,7 +2378,7 @@ function abOpenNotifications(){abEnsureNotificationUI();abRenderNotifications();
 function abCloseNotifications(){document.getElementById('abNotificationOverlay')?.classList.remove('show');document.body.classList.remove('ab-notifications-open');}
 function abShowNewNotificationToast(item){
   let toast=document.getElementById('abNotificationToast');if(!toast){toast=document.createElement('button');toast.type='button';toast.id='abNotificationToast';toast.className='ab-notification-toast';document.body.appendChild(toast);}
-  toast.innerHTML=`<span class="ab-toast-icon">🔔</span><span><b>${abNotificationEscape(item.title||'AnimeBox Update')}</b><small>${abNotificationEscape(item.message||'')}</small></span><span class="ab-toast-close">✕</span>`;
+  toast.innerHTML=`<span class="ab-toast-icon">🔔</span><span><b>${abNotificationEscape(item.title||'AB PLAY Update')}</b><small>${abNotificationEscape(item.message||'')}</small></span><span class="ab-toast-close">✕</span>`;
   toast.classList.add('show');toast.onclick=()=>{abOpenNotifications();toast.classList.remove('show');};
   clearTimeout(window.__abNotificationToastTimer);window.__abNotificationToastTimer=setTimeout(()=>toast.classList.remove('show'),6500);
 }

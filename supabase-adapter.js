@@ -69,6 +69,7 @@
       const base='views/'+contentId;
       setAt(rootCache,base+'/total',data.total);
       setAt(rootCache,base+'/episodes/'+episodeId,data.episode);
+      if(data.dayKey)setAt(rootCache,base+'/days/'+data.dayKey,data.day);
       notify();
     }
     return data;

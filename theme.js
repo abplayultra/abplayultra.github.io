@@ -18,7 +18,7 @@
   function apply(t) {
     root.setAttribute('data-theme', t);
     var m = document.querySelector('meta[name="theme-color"]');
-    if (m) m.setAttribute('content', t === 'light' ? '#f1f4f9' : '#000000');
+    if (m) m.setAttribute('content', t === 'light' ? '#f1f4f9' : '#070c15');
     var label = t === 'light' ? 'Switch to dark mode' : 'Switch to light mode';
     var b = document.querySelectorAll('.ab-theme-toggle');
     for (var i = 0; i < b.length; i++) b[i].setAttribute('aria-label', label);

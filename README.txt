@@ -119,3 +119,38 @@ KNOWN LIMITATION
 - The shared state table is publicly writable by design (see AUTHENTICATION CHECKLIST), and the player is a
   third-party iframe, so play/pause cannot be detected: "active" means loaded + selected + tab visible. Counts are
   therefore a strong engagement signal but not tamper-proof against someone scripting the public API.
+
+
+WATCH BY OTT ROW + PLATFORM PAGES (2026-11-26)
+- Admin > TV/OTT Logo Manager stores streamingName / streamingLogo on each card (from TMDB).
+- Home shows a "WATCH BY OTT" row under the slider: one circle per platform that has at least one card.
+  Badge = "NEW n" (cards updated in last 7 days) or "n TITLES" when nothing is new.
+- Clicking a logo opens /<platform-name> (e.g. /sonyliv) with all cards of that platform (same filters as type pages).
+- "All platforms ->" opens /platforms. The logo on the detail page also links to its platform page.
+- Needs the new Admin index.html so cards carry streamingName/streamingLogo. Hide rule: row is hidden when no card has a logo.
+
+
+TOP 10 THIS WEEK (2026-11-26)
+- Home row placed BELOW all type sections (Movie, Trending, Anime, Series, TV Show), above "Explore ABPlay": ranked cards with big outlined numbers 1-10.
+- Ranking = views in the last 7 days (UTC), then total views. Cards need views first; an empty site hides the row.
+- Weekly views need the UPDATED AnimeBox_Supabase_Setup.sql (run it again in Supabase > SQL Editor; it only replaces
+  the animebox_register_view function and keeps all data). Until it is run, ranking falls back to total views.
+- Admin > Add/Edit Title > "TOP 10 THIS WEEK - Pin": pin a card to position 1-10 (shows a yellow PINNED badge).
+
+
+SEARCH PAGE: TILES + NOTICE SLIDER (2026-11-26)
+- Under the search box: 6 colour tiles (Anime Zone, 18+ Adult, Ongoing Series, K/J/C-Drama, South Indian, Animation),
+  then the live Notice Slider, then the category row (now with red count badges).
+- Notice Slider = Admin > Notice Slider (Search) > Supabase settings/noticeSlider. One notice at a time, auto-change every
+  "interval" seconds (Admin default 15). Dots are clickable. Hidden when disabled or empty. Live: no refresh needed.
+- New pages /18-adult and /animation were added for the two new tiles.
+
+
+SEARCH PAGE TILES + CHIPS NOW LIVE FROM ADMIN (2026-11-26, fix)
+- Admin > Notice & Search Page Manager > Tiles / Search Chips are saved to Supabase settings/searchPage.
+  The User Website previously ignored this node (tiles/chips were hard-coded), so Admin changes never showed up.
+- script.js now reads settings/searchPage live: tile name/icon/badge/colour/link/order/on-off, "Show Tiles" and
+  "Show chips" switches, chips list and chips section title. Nothing saved = built-in defaults. No refresh needed.
+- Tile links starting with / open inside the site; https:// links open in a new tab.
+- Notice Slider (settings/noticeSlider) and Home Notice Line (settings/homeNotice) were already read; unchanged.
+- Files changed: script.js, style.css, README.txt. Admin index.html needs no change.
