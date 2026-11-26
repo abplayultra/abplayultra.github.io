@@ -1085,9 +1085,9 @@ function renderDetailsPage(id, seasonParam, episodeParam){
   const description=detailText(detailValue(item,['description','overview','storyline','plot','synopsis'],''),'No storyline added yet.');
   const cast=detailArray(item,['cast','actors','voiceActors','staff']);
   const trailer=detailText(detailValue(item,['trailerUrl','trailer','youtubeTrailer'],''));
-  const streamLogo=detailText(detailValue(item,['streamingLogo','ottLogo','platformLogo','tvLogo','networkLogo'],''));
-  const streamName=detailText(detailValue(item,['streamingName','ottName','platformName','tvName','networkName'],''));
-  const streamHtml=/^https?:\/\//i.test(streamLogo)?`<div class="details-stream-logo" title="${safeText(streamName||'Streaming platform')}">${streamName?`<a href="${safeText(ottUrl(streamName))}" aria-label="${safeText(streamName)}">`:''}<img src="${safeText(streamLogo)}" alt="${safeText(streamName||'Streaming platform')}" loading="lazy" decoding="async" onerror="this.closest('.details-stream-logo').style.display='none'">${streamName?'</a>':''}</div>`:'';
+  // Show the Admin-managed TV/OTT platforms as individual cards (up to 10: 5 columns × 2 rows).
+  const streamPlatforms=getOttPlatforms(latestContentItems||[]).filter(p=>/^https?:\/\//i.test(p.logo)).slice(0,10);
+  const streamHtml=streamPlatforms.length?`<section class="details-stream-section"><h2 class="details-section-title">📺 TV / OTT PLATFORMS</h2><div class="details-stream-grid">${streamPlatforms.map(p=>`<a class="details-stream-card" href="${safeText(ottUrl(p.name))}" title="${safeText(p.name)}"><span class="details-stream-card-logo"><img src="${safeText(p.logo)}" alt="${safeText(p.name)}" loading="lazy" decoding="async" onerror="this.closest('.details-stream-card').style.display='none'"></span><span class="details-stream-card-name">${safeText(p.name)}</span></a>`).join('')}</div></section>`:'';
   const myListKey='animebox_my_list'; let saved=[]; try{saved=JSON.parse(localStorage.getItem(myListKey)||'[]')}catch(_){}
   const itemId=String(item.id ?? item.key ?? item.contentId ?? id); const inList=saved.includes(itemId);
   // Keep a per-account watch history on this browser, newest first.
