@@ -1085,9 +1085,31 @@ function renderDetailsPage(id, seasonParam, episodeParam){
   const description=detailText(detailValue(item,['description','overview','storyline','plot','synopsis'],''),'No storyline added yet.');
   const cast=detailArray(item,['cast','actors','voiceActors','staff']);
   const trailer=detailText(detailValue(item,['trailerUrl','trailer','youtubeTrailer'],''));
-  // Show the Admin-managed TV/OTT platforms as individual cards (up to 10: 5 columns × 2 rows).
-  const streamPlatforms=getOttPlatforms(latestContentItems||[]).filter(p=>/^https?:\/\//i.test(p.logo)).slice(0,10);
-  const streamHtml=streamPlatforms.length?`<section class="details-stream-section"><h2 class="details-section-title">📺 TV / OTT PLATFORMS</h2><div class="details-stream-grid">${streamPlatforms.map(p=>`<a class="details-stream-card" href="${safeText(ottUrl(p.name))}" title="${safeText(p.name)}"><span class="details-stream-card-logo"><img src="${safeText(p.logo)}" alt="${safeText(p.name)}" loading="lazy" decoding="async" onerror="this.closest('.details-stream-card').style.display='none'"></span><span class="details-stream-card-name">${safeText(p.name)}</span></a>`).join('')}</div></section>`:'';
+  // A title can belong to several TV/OTT platforms. Prefer the complete
+  // provider arrays, while keeping compatibility with older single-logo cards.
+  const rawStreamProviders=detailValue(item,['streamingProviders','streamingLogos','ottProviders','ottLogos','platforms','networks'],'');
+  const streamProviders=[];
+  const addStreamProvider=(entry)=>{
+    if(!entry)return;
+    if(typeof entry==='string'){
+      const url=entry.trim(); if(/^https?:\/\//i.test(url)&&!streamProviders.some(x=>x.logo===url))streamProviders.push({name:'',logo:url});
+      return;
+    }
+    if(typeof entry==='object'){
+      const logo=detailText(detailValue(entry,['logo','logoUrl','image','imageUrl','url','streamingLogo'],''));
+      const name=detailText(detailValue(entry,['name','provider_name','title','platformName','streamingName'],''));
+      if(/^https?:\/\//i.test(logo)&&!streamProviders.some(x=>x.logo===logo))streamProviders.push({name,logo});
+    }
+  };
+  if(Array.isArray(rawStreamProviders))rawStreamProviders.forEach(addStreamProvider);
+  else if(typeof rawStreamProviders==='string'&&rawStreamProviders.trim()){
+    try{const parsed=JSON.parse(rawStreamProviders);if(Array.isArray(parsed))parsed.forEach(addStreamProvider);else addStreamProvider(parsed);}
+    catch(_){rawStreamProviders.split(/[\\n,;]+/).forEach(addStreamProvider);}
+  } else if(rawStreamProviders&&typeof rawStreamProviders==='object')Object.values(rawStreamProviders).forEach(addStreamProvider);
+  const legacyLogo=detailText(detailValue(item,['streamingLogo','ottLogo','platformLogo','tvLogo','networkLogo'],''));
+  const legacyName=detailText(detailValue(item,['streamingName','ottName','platformName','tvName','networkName'],''));
+  if(/^https?:\/\//i.test(legacyLogo))addStreamProvider({name:legacyName,logo:legacyLogo});
+  const streamHtml=streamProviders.length?`<div class="details-stream-logos" aria-label="Available TV and OTT platforms">${streamProviders.map(p=>`<a class="details-stream-logo" ${p.name?`href="${safeText(ottUrl(p.name))}" aria-label="${safeText(p.name)}" title="${safeText(p.name)}"`:'href="#" aria-label="Streaming platform" title="Streaming platform"'}><img src="${safeText(p.logo)}" alt="${safeText(p.name||'Streaming platform')}" loading="lazy" decoding="async" onerror="this.parentElement.remove()"></a>`).join('')}</div>`:'';
   const myListKey='animebox_my_list'; let saved=[]; try{saved=JSON.parse(localStorage.getItem(myListKey)||'[]')}catch(_){}
   const itemId=String(item.id ?? item.key ?? item.contentId ?? id); const inList=saved.includes(itemId);
   // Keep a per-account watch history on this browser, newest first.
