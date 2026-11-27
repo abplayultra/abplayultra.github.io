@@ -154,3 +154,14 @@ SEARCH PAGE TILES + CHIPS NOW LIVE FROM ADMIN (2026-11-26, fix)
 - Tile links starting with / open inside the site; https:// links open in a new tab.
 - Notice Slider (settings/noticeSlider) and Home Notice Line (settings/homeNotice) were already read; unchanged.
 - Files changed: script.js, style.css, README.txt. Admin index.html needs no change.
+
+
+HOME: TV SHOW SECTION REMOVED + MULTI PLATFORMS (2026-11-27)
+- The "TV Show" rail is removed from the Home page (index.html). The /tv-show page and the TV Show nav link still work.
+- A card can now belong to SEVERAL TV/OTT platforms (TMDB often lists 2-3+). Admin saves them in content/<id>/streamingProviders
+  [{name,logo}] (streamingName/streamingLogo = first one, kept for compatibility).
+- Detail page shows every platform logo of the card (each links to its platform page).
+- WATCH BY OTT row, /platforms and /<platform> pages count a card under EVERY platform it has.
+- Use the NEW Admin index.html: TMDB fetch now returns all platforms (watch providers of your region + TV networks, de-duplicated,
+  max 8). Existing cards get the full list when you run Admin > TV/OTT Logo Manager (cards with a logo but no provider list are
+  now included automatically; manual main logo is kept unless "Overwrite" is ticked).

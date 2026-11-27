@@ -1725,18 +1725,43 @@ function ottNameOf(item){ return String(firstValue(item,['streamingName','ottNam
 function ottLogoOf(item){ return String(firstValue(item,['streamingLogo','ottLogo','platformLogo','tvLogo','networkLogo'],'')).trim(); }
 function ottSlugOf(name){ return slugify(name); }
 function ottUrl(name){ return '/'+ottSlugOf(name); }
+/* ALL platforms of a card: Admin streamingProviders [{name,logo}] (TMDB can give 2-3+) + legacy single streamingName/streamingLogo. */
+function ottProvidersOf(item){
+  const out=[], seen=new Set();
+  const add=e=>{
+    if(!e) return;
+    let name='', logo='';
+    if(typeof e==='string'){ logo=e.trim(); }
+    else if(typeof e==='object'){
+      name=String(e.name||e.provider_name||e.title||e.platformName||e.streamingName||'').trim();
+      logo=String(e.logo||e.logoUrl||e.image||e.imageUrl||e.url||e.streamingLogo||'').trim();
+    }
+    if(!/^https?:\/\//i.test(logo)) logo='';
+    if(!name && !logo) return;
+    const key=name?ottSlugOf(name):logo;
+    if(seen.has(key)) return; seen.add(key);
+    out.push({name,logo});
+  };
+  const raw=firstValue(item,['streamingProviders','streamingLogos','ottProviders','ottLogos','platforms','networks'],'');
+  if(Array.isArray(raw)) raw.forEach(add);
+  else if(raw && typeof raw==='object') Object.values(raw).forEach(add);
+  add({name:ottNameOf(item),logo:ottLogoOf(item)});
+  return out;
+}
 function getOttPlatforms(items){
   const list=Array.isArray(items)?items:(latestContentItems||[]);
   const map=new Map(), weekAgo=Date.now()-7*24*60*60*1000;
   list.forEach(item=>{
-    const name=ottNameOf(item); if(!name || item?.enabled===false) return;
-    const slug=ottSlugOf(name);
-    let e=map.get(slug); if(!e){ e={slug,name,logo:'',count:0,newCount:0,latest:0}; map.set(slug,e); }
-    const logo=ottLogoOf(item); if(!e.logo && /^https?:\/\//i.test(logo)) e.logo=logo;
-    e.count++;
+    if(!item || item.enabled===false) return;
     let t=0; try{ t=abCardUpdateInfo(item)||0; }catch(_){}
-    if(t>weekAgo) e.newCount++;
-    if(t>e.latest) e.latest=t;
+    ottProvidersOf(item).filter(p=>p.name).forEach(p=>{
+      const slug=ottSlugOf(p.name);
+      let e=map.get(slug); if(!e){ e={slug,name:p.name,logo:'',count:0,newCount:0,latest:0}; map.set(slug,e); }
+      if(!e.logo && p.logo) e.logo=p.logo;
+      e.count++;
+      if(t>weekAgo) e.newCount++;
+      if(t>e.latest) e.latest=t;
+    });
   });
   return [...map.values()].sort((a,b)=>(b.newCount-a.newCount)||(b.count-a.count)||a.name.localeCompare(b.name));
 }
@@ -1745,7 +1770,7 @@ function findOttPage(slugOrName){
   const e=getOttPlatforms().find(p=>typeKey(p.slug)===k||typeKey(p.name)===k);
   if(!e) return null;
   const slug=e.slug;
-  return {name:e.name, slug, ott:true, logo:e.logo, defaultSort:'newest', match:i=>ottSlugOf(ottNameOf(i))===slug};
+  return {name:e.name, slug, ott:true, logo:e.logo, defaultSort:'newest', match:i=>ottProvidersOf(i).some(p=>p.name && ottSlugOf(p.name)===slug)};
 }
 function ottBubbleHtml(p){
   const badge=p.newCount>0?`<span class="ab-ott-badge">NEW ${p.newCount}</span>`:`<span class="ab-ott-badge total">${p.count} TITLE${p.count>1?'S':''}</span>`;
