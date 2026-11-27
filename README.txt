@@ -165,3 +165,10 @@ HOME: TV SHOW SECTION REMOVED + MULTI PLATFORMS (2026-11-27)
 - Use the NEW Admin index.html: TMDB fetch now returns all platforms (watch providers of your region + TV networks, de-duplicated,
   max 8). Existing cards get the full list when you run Admin > TV/OTT Logo Manager (cards with a logo but no provider list are
   now included automatically; manual main logo is kept unless "Overwrite" is ticked).
+
+
+PLATFORM LOGOS REDESIGN (2026-11-27)
+- Logos are no longer cropped into a circle. They are rounded tiles; app icons fill the tile, transparent wordmarks (BONGO, TV Tokyo,
+  wavve ...) are shown whole with padding on an automatically chosen light/dark background so black or white logos stay visible.
+- Sharper images (TMDB w300 instead of w154). Names wrap to 2 lines instead of "Crunchyroll ...". Works in Dark and Light mode.
+- Same style on Home "WATCH BY OTT", /platforms page and the Detail page. Files: script.js, style.css.

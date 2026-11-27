@@ -1109,7 +1109,7 @@ function renderDetailsPage(id, seasonParam, episodeParam){
   const legacyLogo=detailText(detailValue(item,['streamingLogo','ottLogo','platformLogo','tvLogo','networkLogo'],''));
   const legacyName=detailText(detailValue(item,['streamingName','ottName','platformName','tvName','networkName'],''));
   if(/^https?:\/\//i.test(legacyLogo))addStreamProvider({name:legacyName,logo:legacyLogo});
-  const streamHtml=streamProviders.length?`<div class="details-stream-logos" aria-label="Available TV and OTT platforms">${streamProviders.map(p=>`<a class="details-stream-logo" ${p.name?`href="${safeText(ottUrl(p.name))}" aria-label="${safeText(p.name)}" title="${safeText(p.name)}"`:'href="#" aria-label="Streaming platform" title="Streaming platform"'}><img src="${safeText(p.logo)}" alt="${safeText(p.name||'Streaming platform')}" loading="lazy" decoding="async" onerror="this.parentElement.remove()"></a>`).join('')}</div>`:'';
+  const streamHtml=streamProviders.length?`<div class="details-stream-logos" aria-label="Available TV and OTT platforms">${streamProviders.map(p=>`<a class="details-stream-logo" ${p.name?`href="${safeText(ottUrl(p.name))}" aria-label="${safeText(p.name)}" title="${safeText(p.name)}"`:'href="#" aria-label="Streaming platform" title="Streaming platform"'}><img src="${safeText(abLogoHq(p.logo))}" alt="${safeText(p.name||'Streaming platform')}" crossorigin="anonymous" loading="lazy" decoding="async" onload="abLogoFit(this)" onerror="abLogoErr(this,true)"></a>`).join('')}</div>`:'';
   const myListKey='animebox_my_list'; let saved=[]; try{saved=JSON.parse(localStorage.getItem(myListKey)||'[]')}catch(_){}
   const itemId=String(item.id ?? item.key ?? item.contentId ?? id); const inList=saved.includes(itemId);
   // Keep a per-account watch history on this browser, newest first.
@@ -1772,9 +1772,30 @@ function findOttPage(slugOrName){
   const slug=e.slug;
   return {name:e.name, slug, ott:true, logo:e.logo, defaultSort:'newest', match:i=>ottProvidersOf(i).some(p=>p.name && ottSlugOf(p.name)===slug)};
 }
+/* Platform logo helpers: sharper TMDB size + smart tile (opaque app icons fill the tile, transparent wordmarks get a
+   contrasting background so dark/white logos stay visible). Falls back safely if canvas/CORS is unavailable. */
+function abLogoHq(u){ return String(u||'').replace(/(image\.tmdb\.org\/t\/p\/)w(?:45|92|154|185)\//,'$1w300/'); }
+function abLogoFit(img){
+  try{
+    const host=img.parentElement; if(!host||!img.naturalWidth) return;
+    const c=document.createElement('canvas'), n=40; c.width=n; c.height=n;
+    const x=c.getContext('2d',{willReadFrequently:true}); x.drawImage(img,0,0,n,n);
+    const d=x.getImageData(0,0,n,n).data, a=(px,py)=>d[(py*n+px)*4+3];
+    const corners=[a(0,0),a(n-1,0),a(0,n-1),a(n-1,n-1)];
+    if(corners.every(v=>v>200)){ host.classList.add('logo-icon'); return; }
+    let sum=0,cnt=0;
+    for(let i=0;i<d.length;i+=4){ if(d[i+3]>40){ sum+=0.2126*d[i]+0.7152*d[i+1]+0.0722*d[i+2]; cnt++; } }
+    if(!cnt) return;
+    host.classList.add(sum/cnt<110?'logo-dark':'logo-light');
+  }catch(_){}
+}
+function abLogoErr(img,remove){
+  if(!img.dataset.retry && img.hasAttribute('crossorigin')){ img.dataset.retry='1'; img.removeAttribute('crossorigin'); const s=img.src; img.src=''; img.src=s; return; }
+  if(remove) img.parentElement && img.parentElement.remove(); else img.style.visibility='hidden';
+}
 function ottBubbleHtml(p){
   const badge=p.newCount>0?`<span class="ab-ott-badge">NEW ${p.newCount}</span>`:`<span class="ab-ott-badge total">${p.count} TITLE${p.count>1?'S':''}</span>`;
-  return `<a class="ab-ott-item" href="${safeText(ottUrl(p.name))}" title="${safeText(p.name)}"><span class="ab-ott-circle"><img src="${safeText(p.logo)}" alt="${safeText(p.name)}" loading="lazy" decoding="async" onerror="this.style.visibility='hidden'"></span>${badge}<span class="ab-ott-name">${safeText(p.name)}</span></a>`;
+  return `<a class="ab-ott-item" href="${safeText(ottUrl(p.name))}" title="${safeText(p.name)}"><span class="ab-ott-circle"><img src="${safeText(abLogoHq(p.logo))}" alt="${safeText(p.name)}" crossorigin="anonymous" loading="lazy" decoding="async" onload="abLogoFit(this)" onerror="abLogoErr(this,false)"></span>${badge}<span class="ab-ott-name">${safeText(p.name)}</span></a>`;
 }
 function renderOttRow(items){
   const box=document.getElementById('abOttSection'); if(!box) return;

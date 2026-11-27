@@ -959,3 +959,27 @@ html[data-theme="light"] .search-notice-dots i{background:#cbd5e1}
 .details-stream-logos{display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap;margin:16px 0 18px;width:100%}
 .details-stream-logos .details-stream-logo{width:42px;height:42px;display:flex;align-items:center;justify-content:center;border-radius:50%;overflow:hidden;background:#090b12;border:1px solid rgba(255,255,255,.14);box-shadow:0 2px 8px rgba(0,0,0,.28);flex:0 0 42px}
 .details-stream-logos .details-stream-logo img{width:100%;height:100%;object-fit:contain;padding:2px}
+
+/* ===== Platform logos v2: rounded tiles, no cropping, visible on dark & light ===== */
+.ab-ott-rail{gap:14px}
+.ab-ott-item{width:84px}
+.ab-ott-circle{width:72px;height:72px;border-radius:18px;background:linear-gradient(145deg,#1b2233,#10151f);border:1px solid rgba(255,255,255,.18);display:flex;align-items:center;justify-content:center;overflow:hidden}
+.ab-ott-circle img{width:100%;height:100%;object-fit:contain;padding:10px;box-sizing:border-box;image-rendering:auto}
+.ab-ott-circle.logo-icon img{padding:0;object-fit:cover}
+.ab-ott-circle.logo-dark{background:linear-gradient(145deg,#ffffff,#e8edf5)}
+.ab-ott-circle.logo-light{background:linear-gradient(145deg,#1b2233,#0b0f19)}
+.ab-ott-badge{margin-top:-10px;font-size:9px;padding:2px 9px;border-radius:7px}
+.ab-ott-name{max-width:84px;margin-top:7px;font-size:11px;line-height:1.25;white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;text-overflow:clip;word-break:break-word;min-height:2.5em}
+.ab-ott-grid{grid-template-columns:repeat(auto-fill,minmax(96px,1fr))}
+@media(max-width:640px){.ab-ott-item{width:74px}.ab-ott-circle{width:62px;height:62px;border-radius:15px}.ab-ott-circle img{padding:8px}.ab-ott-circle.logo-icon img{padding:0}.ab-ott-name{max-width:74px;font-size:10px}}
+html[data-theme="light"] .ab-ott-circle{border-color:#cfd7e4}
+html[data-theme="light"] .ab-ott-circle:not(.logo-dark):not(.logo-light):not(.logo-icon){background:linear-gradient(145deg,#f4f7fb,#e3e9f2)}
+html[data-theme="light"] .ab-ott-circle.logo-light{background:linear-gradient(145deg,#27304a,#10151f)}
+/* detail page */
+.details-stream-logos{gap:12px}
+.details-stream-logos .details-stream-logo{width:52px;height:52px;flex:0 0 52px;border-radius:14px;background:linear-gradient(145deg,#1b2233,#10151f);border:1px solid rgba(255,255,255,.18)}
+.details-stream-logos .details-stream-logo img{object-fit:contain;padding:7px;box-sizing:border-box}
+.details-stream-logos .details-stream-logo.logo-icon img{padding:0;object-fit:cover}
+.details-stream-logos .details-stream-logo.logo-dark{background:linear-gradient(145deg,#fff,#e8edf5)}
+.details-stream-logos .details-stream-logo.logo-light{background:linear-gradient(145deg,#1b2233,#0b0f19)}
+html[data-theme="light"] .details-stream-logos .details-stream-logo:not(.logo-dark):not(.logo-light):not(.logo-icon){background:linear-gradient(145deg,#f4f7fb,#e3e9f2);border-color:#cfd7e4}
